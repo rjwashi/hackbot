@@ -1,0 +1,71 @@
+hackbot  (mind map v2 — overview, annotated)
+
+├── is → WHAT IT IS
+│   ├── is → a Go-first security toolkit with a Python escape hatch
+│   ├── lives at → github.com/rjwashi/hackbot (public, main)
+│   └── builds to → one binary: bin/hackbot.exe (go build -o bin/hackbot.exe .)
+├── exists to → PURPOSE
+│   ├── produces → turn scans and checklists into prioritized, actionable findings
+│   ├── restricted to → use only free / open-source tools
+│   └── constrained by → never touch a system that is not explicitly authorized
+├── organizes → AGENT FAMILIES
+│   ├── includes → nmap family (parse, analyze, recon, vulscan, pipeline, guarded scan)
+│   ├── includes → cve family (categories, search, keyword, scan)
+│   ├── includes → web (WSTG) family (list, show, tools, plan, run)
+│   ├── includes → recon family (subdomains, dns, ports, services, http, whois, urls)
+│   ├── includes → discover family (dirs, files, extensions, vhosts, params)
+│   └── will grow via → [planned] secrets, deps/SBOM, and cloud families
+├── exposes → CLI SURFACE
+│   ├── includes → hello · run · version · help · py
+│   ├── includes → agents · layout
+│   ├── includes → nmap parse · analyze · recon · vulscan · scan · pipeline
+│   ├── includes → cve categories · search · keyword · scan
+│   ├── includes → web list · show · tools · plan · run
+│   ├── includes → recon list · tools · plan · <task> <target>
+│   └── includes → discover list · tools · plan · <task> <target>
+├── is implemented by → CODE MAP (internal/)
+│   ├── contains → config/
+│   ├── contains → bot/
+│   ├── contains → nmap/
+│   ├── contains → scan/ (+ scope.go)
+│   ├── contains → agent/
+│   ├── contains → cve/
+│   ├── contains → vulscan/
+│   ├── contains → wstg/ (+ capability.go, run.go)
+│   └── contains → ops/ (+ runner.go, recon.go, discovery.go)
+├── processes → DATA FLOW
+│   ├── starts from → nmap XML (or guarded scan) → parse → analyze → []Finding
+│   │   └── becomes → []Finding → [LLM narrative] → [GitHub issues, dry-run]
+│   ├── includes → WSTG checklist → capability (test→tool) → plan / guarded run
+│   ├── includes → domain → recon task → tool stdout
+│   └── includes → URL → discovery task → ffuf/gobuster stdout
+├── is constrained by → SAFETY MODEL
+│   ├── defaults to → execution is DISABLED by default (enable_scan)
+│   ├── requires → an allowlist is REQUIRED (allowed_targets IP/CIDR; allowed_domains names)
+│   ├── defaults to → actions are DRY-RUN by default (web run, recon, discover, issues)
+│   ├── prefers → ingestion is the default mode
+│   ├── enforces → fixed argument templates (targets are never shell-interpolated)
+│   └── guaranteed by → the runner is the authoritative gate
+├── is set by → CONFIGURATION
+│   ├── via → -config hackbot.json (see hackbot.example.json)
+│   ├── via → HACKBOT_* env vars override the file
+│   └── includes → allowed_domains and wordlist (recon/discover)
+├── is verified by → QUALITY
+│   ├── includes → Go tests per package (table-driven)
+│   ├── includes → Python tests (pytest over pythontools/)
+│   ├── includes → CI: gofmt + vet + build + test -race + pytest
+│   └── includes → drift tests keep registry, docs, and catalogs in sync
+├── tracks → ROADMAP
+│   ├── includes → [ ] secrets scanning (gitleaks, trufflehog)
+│   ├── includes → [ ] dependency / SBOM (trivy, grype, osv-scanner)
+│   ├── includes → [ ] cloud posture (prowler)
+│   ├── includes → [ ] recon → discover chaining
+│   ├── includes → [ ] generate OpenCode skills from agents
+│   └── includes → [ ] vulscan → NVD enrichment; EPSS/KEV; SARIF/CycloneDX
+└── is documented by → MIND MAP META
+    ├── uses → CXL (CmapTools) is the map of record; .txt mirrors it
+    ├── uses → long-comments explain the 'why' and the rejected alternatives
+    └── uses → one version per milestone; older versions stay for history
+
+Concepts marked '[ ]' are roadmap items. Most concepts carry a
+long-comment in the .cxl explaining the reasoning (open it in CmapTools).

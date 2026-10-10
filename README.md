@@ -23,8 +23,11 @@ hackbot/docs/
 hackbot/docs/agents.md
 hackbot/docs/mindmap/
 hackbot/docs/mindmap/README.md
+hackbot/docs/mindmap/build.py
 hackbot/docs/mindmap/v1-overview.cxl
 hackbot/docs/mindmap/v1-overview.txt
+hackbot/docs/mindmap/v2-overview.cxl
+hackbot/docs/mindmap/v2-overview.txt
 hackbot/go.mod
 hackbot/hackbot.example.json
 hackbot/internal/

@@ -13,15 +13,17 @@ project grows, so each meaningful milestone gets its own version.
   repo or a terminal. Keep it in sync with the `.cxl`.
 
 Node `long-comment`s (CmapTools concept comments) are used to explain concepts
-to someone who does not know hackbot yet.
+to someone who does not know hackbot yet. In `v2` almost every concept carries a
+long-comment explaining *why* the design is the way it is and which alternatives
+were rejected — open the map in CmapTools and hover/click a concept to read it.
 
 ## Versions
 
 | Map (CmapTools) | Plain text | Focus | Status |
 |-----------------|-----------|-------|--------|
-| `v1-overview.cxl` | `v1-overview.txt` | Project shape at the nmap-agent milestone | current |
-| `v2-*.cxl` | `v2-*.txt` | Next milestone (see ROADMAP) | planned |
-| `v3-*.cxl` | `v3-*.txt` | Following milestone | planned |
+| `v1-overview.cxl` | `v1-overview.txt` | Project shape at the nmap-agent milestone | archived |
+| `v2-overview.cxl` | `v2-overview.txt` | Five agent families + shared engine; every concept annotated | current |
+| `v3-*.cxl` | `v3-*.txt` | Next milestone | planned |
 | `final-annotated.cxl` | — | Every concept explained for a newcomer | planned |
 
 ## How to read a map
@@ -32,5 +34,16 @@ to someone who does not know hackbot yet.
 
 ## Keeping it current
 
-Add a new `vN-*.cxl` (+ `.txt` mirror) when a milestone lands, and update the
-table above. Keep older versions untouched so the evolution stays visible.
+`v2` is generated: `build.py` holds the whole map as one structure
+(`CONCEPTS` + `EDGES`) and emits both `v2-overview.cxl` and `v2-overview.txt`
+from it, so the two encodings cannot drift (the same reason the repo has Go
+drift-tests for its docs). Regenerate with:
+
+```bash
+python docs/mindmap/build.py
+```
+
+If you rearrange the map in CmapTools, port those edits back into `build.py` and
+re-run it so the script stays authoritative. Add a new `vN-*.cxl` (+ `.txt`
+mirror) when a milestone lands, and update the table above. Keep older versions
+untouched so the evolution stays visible.
