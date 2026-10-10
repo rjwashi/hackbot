@@ -8,9 +8,10 @@ import ( // test imports
 	"strings"       // string checks for agent rendering
 	"testing"       // the testing framework
 
-	"github.com/rjwashi/hackbot/internal/nmap" // Severity type for parseSeverity tests
-	"github.com/rjwashi/hackbot/internal/ops"  // recon/discovery catalogs
-	"github.com/rjwashi/hackbot/internal/wstg" // load the embedded WSTG checklists
+	"github.com/rjwashi/hackbot/internal/nmap"     // Severity type for parseSeverity tests
+	"github.com/rjwashi/hackbot/internal/ops"      // recon/discovery catalogs
+	"github.com/rjwashi/hackbot/internal/skillsec" // load the embedded skill rubrics
+	"github.com/rjwashi/hackbot/internal/wstg"     // load the embedded WSTG checklists
 )
 
 // TestReorderArgsFlagsAnywhere verifies flags after positionals are parsed.
@@ -258,6 +259,57 @@ func TestWebAgentsCoverChecklists(t *testing.T) { // registry <-> checklists inv
 		if want := "web show " + c.Slug; !strings.Contains(a.Command, want) { // command must point at the checklist
 			t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
 		}
+	}
+}
+
+// TestSkillRubricsEmbedded verifies the three skill-security rubric files are
+// embedded and parse: malicious-skills (1.1-1.6), over-privileged-skills
+// (3.1-3.8) and insecure-metadata (4.1-4.12). Add a new rubric to
+// src/agent_files/ and these counts must be updated.
+func TestSkillRubricsEmbedded(t *testing.T) { // guards the //go:embed + parser
+	rubrics, err := skillsec.Load(checklistsFS, checklistsDir) // load the embedded rubrics
+	if err != nil {
+		t.Fatalf("load embedded rubrics: %v", err)
+	}
+	if len(rubrics) != 3 { // the skill-security set has 3 rubrics
+		t.Fatalf("rubrics = %d, want 3", len(rubrics))
+	}
+	total := 0                  // count every check
+	for _, r := range rubrics { // across all rubrics
+		total += len(r.Checks)                                // accumulate
+		if r.Code == "" || r.Category == "" || r.Slug == "" { // each rubric must be complete
+			t.Errorf("incomplete rubric: %+v", r)
+		}
+		if len(r.Checks) == 0 { // and must have at least one check
+			t.Errorf("rubric %s has no checks", r.File)
+		}
+	}
+	if total != 26 { // 6 + 8 + 12 across the three rubrics
+		t.Errorf("total checks = %d, want 26", total)
+	}
+}
+
+// TestSkillAgentsCoverRubrics verifies every skill rubric has a matching agent.
+// Add a new rubric file under src/agent_files/ and you must add an agent too,
+// mirroring the WSTG invariant above.
+func TestSkillAgentsCoverRubrics(t *testing.T) { // registry <-> rubrics invariant
+	rubrics, err := skillsec.Load(checklistsFS, checklistsDir) // load the embedded rubrics
+	if err != nil {
+		t.Fatalf("load embedded rubrics: %v", err)
+	}
+	for _, r := range rubrics { // each rubric needs an agent...
+		name := "skill-" + r.Slug // ...named skill-<slug>
+		a, ok := findAgent(name)  // look it up
+		if !ok {                  // missing agent...
+			t.Errorf("no agent for rubric %s (expected %q)", r.File, name) // ...fail
+			continue
+		}
+		if want := "skill show " + r.Slug; !strings.Contains(a.Command, want) { // command must point at the rubric
+			t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
+		}
+	}
+	if _, ok := findAgent("skill-evaluate"); !ok { // the guarded evaluator must exist too
+		t.Error("no agent for the skill evaluator (expected \"skill-evaluate\")")
 	}
 }
 

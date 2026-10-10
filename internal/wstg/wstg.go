@@ -9,12 +9,22 @@
 package wstg // importable as "wstg"
 
 import ( // imports for this file
+	"errors"  // errors.Is against ErrNoCategory when loading a mixed directory
 	"fmt"     // Summary/List formatting
 	"io/fs"   // read the embedded checklist files from any fs.FS
 	"path"    // join and trim file paths
 	"sort"    // deterministic ordering of loaded checklists
 	"strings" // table and line parsing
 )
+
+// ErrNoCategory marks a Markdown file that carries no WSTG checklist at all.
+//
+// src/agent_files/ is a shared directory: it now also holds skill-security
+// rubrics (MaliciousSkills.md, OverPrivilegedSkills.md) whose rows are numbered
+// "3.1" rather than "WSTG-INJT-05". Load skips such files instead of failing,
+// which is what lets several rubric families live side by side in one embedded
+// tree without the web agents breaking when a new file appears.
+var ErrNoCategory = errors.New("no category row (WSTG-XXXX) found") // sentinel for errors.Is
 
 // Test is one WSTG test item within a category.
 type Test struct { // one row of a checklist table
@@ -54,7 +64,10 @@ func Load(fsys fs.FS, dir string) ([]Checklist, error) { // main entry point
 			return nil, err
 		}
 		c, err := Parse(e.Name(), string(data)) // parse the table
-		if err != nil {                         // propagate parse errors
+		if errors.Is(err, ErrNoCategory) {      // not a WSTG checklist at all...
+			continue // ...so skip it rather than failing the whole directory
+		}
+		if err != nil { // other parse errors are real and propagate
 			return nil, err
 		}
 		out = append(out, c) // collect
@@ -99,7 +112,7 @@ func Parse(file, content string) (Checklist, error) { // one file -> one Checkli
 		c.Tests = append(c.Tests, t) // collect the test
 	}
 	if c.Code == "" { // a checklist without a category row is malformed
-		return Checklist{}, fmt.Errorf("wstg: %s: no category row (WSTG-XXXX) found", file)
+		return Checklist{}, fmt.Errorf("wstg: %s: %w", file, ErrNoCategory) // wrap the sentinel so callers can detect it
 	}
 	if c.Category == "" { // fall back to the code when the name is missing
 		c.Category = c.Code

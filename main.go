@@ -19,15 +19,16 @@ import ( // imports for the whole CLI
 	"strings"       // arg/severity/string helpers
 	"time"          // web check timeouts
 
-	"github.com/rjwashi/hackbot/internal/agent"   // the pipeline
-	"github.com/rjwashi/hackbot/internal/bot"     // the core bot loop + Python bridge
-	"github.com/rjwashi/hackbot/internal/config"  // configuration loading
-	"github.com/rjwashi/hackbot/internal/cve"     // CVE search (NVD) agent
-	"github.com/rjwashi/hackbot/internal/nmap"    // XML parsing + analysis
-	"github.com/rjwashi/hackbot/internal/ops"     // recon + content-discovery engine
-	"github.com/rjwashi/hackbot/internal/scan"    // guarded scanning
-	"github.com/rjwashi/hackbot/internal/vulscan" // vulscan (VulDB) recon agent
-	"github.com/rjwashi/hackbot/internal/wstg"    // WSTG web-security-testing checklists
+	"github.com/rjwashi/hackbot/internal/agent"    // the pipeline
+	"github.com/rjwashi/hackbot/internal/bot"      // the core bot loop + Python bridge
+	"github.com/rjwashi/hackbot/internal/config"   // configuration loading
+	"github.com/rjwashi/hackbot/internal/cve"      // CVE search (NVD) agent
+	"github.com/rjwashi/hackbot/internal/nmap"     // XML parsing + analysis
+	"github.com/rjwashi/hackbot/internal/ops"      // recon + content-discovery engine
+	"github.com/rjwashi/hackbot/internal/scan"     // guarded scanning
+	"github.com/rjwashi/hackbot/internal/skillsec" // skill-security rubric evaluation
+	"github.com/rjwashi/hackbot/internal/vulscan"  // vulscan (VulDB) recon agent
+	"github.com/rjwashi/hackbot/internal/wstg"     // WSTG web-security-testing checklists
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -97,6 +98,12 @@ Commands:
   deps plan                 Show every deps task and its command
   deps <task> <path>        Run a dependency/SBOM scan on a local path (dry-run by default)
 
+  skill list                List skill-security rubrics (malicious, over-privileged, insecure-metadata)
+  skill show <rubric>       Show one rubric's checks and evidence
+  skill rules [rubric]      Show the probe catalog: free tools + a command per check
+  skill plan <rubric>       Map every check to a probe or manual guidance
+  skill run <rubric> <path> Evaluate a skill directory against a rubric (dry-run by default)
+
 Common flags:
   -config PATH              Path to a JSON config file (optional)
   -json                     Machine-readable JSON output (nmap commands)
@@ -112,6 +119,10 @@ recon/discover/secrets/deps flags:
   -timeout DURATION         Per-task timeout (default 60s)
   -scheme SCHEME            URL scheme used to build {url} (default https)
   -wordlist PATH            Wordlist for content discovery (default: SecLists common.txt)
+
+skill run flags:
+  -dry-run                  Do not execute probes (default true; pass -dry-run=false)
+  -timeout DURATION         Per-probe timeout (default 60s)
 
 nmap scan flags:
   -scripts LIST             NSE scripts to run (default: safe recon set; "none" disables)
@@ -135,7 +146,7 @@ agents flags:
   -name NAME                Agent name for -format skill
 
 Safety: scanning is disabled unless enable_scan is true AND the target is in
-allowed_targets (IPs/CIDRs) or allowed_domains (names); local tools (secrets/deps)
+allowed_targets (IPs/CIDRs) or allowed_domains (names); local tools (secrets/deps/skill)
 additionally require the path to be inside allowed_paths. Only scan systems you
 own or are explicitly authorized to test.
 ` // end of usage text
@@ -151,7 +162,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover", "secrets", "deps": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover", "secrets", "deps", "skill": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -284,6 +295,12 @@ func runCommand(command string, args []string) error { // shared preamble
 			dryRun:  *dryRun,     // dry-run default true
 			timeout: *webTimeout, // per-task timeout
 			scheme:  *webScheme,  // URL scheme (unused by path catalogs, harmless)
+		})
+	case "skill": // skill-security rubric evaluation
+		return runSkill(cfg, fs.Args(), skillFlags{ // one rubric + one skill directory
+			json:    *asJSON,     // JSON output
+			dryRun:  *dryRun,     // dry-run default true (nothing executes)
+			timeout: *webTimeout, // per-probe timeout
 		})
 	}
 	return nil // unreachable
@@ -760,6 +777,278 @@ func runWebChecks(cfg config.Config, checklists []wstg.Checklist, rest []string,
 		fmt.Printf("%d/%d check(s) completed without error\n", okCount, len(results))
 	}
 	return nil
+}
+
+// skillFlags carries the skill-family flags.
+//
+// WHY a separate struct (rather than reusing opsFlags): skill evaluation has no
+// URL scheme or wordlist; it only needs JSON, the dry-run safety default and a
+// per-probe timeout, so a dedicated struct keeps the contract explicit.
+type skillFlags struct {
+	json    bool          // emit JSON
+	dryRun  bool          // render probes but execute nothing (SECURITY: default true)
+	timeout time.Duration // per-probe timeout
+}
+
+// runSkill dispatches the skill-security rubric evaluation agents.
+//
+// Subcommands:
+//
+//	skill list                list the rubrics (default)
+//	skill show <rubric>       print one rubric's checks and evidence
+//	skill rules [rubric]      show the probe catalog (tools + a command per check)
+//	skill plan <rubric>       map every check to a probe or manual guidance
+//	skill run <rubric> <path> evaluate a skill directory (guarded, dry-run default)
+//
+// WHY these five verbs: they mirror `web`'s mental model — see the checklist,
+// see the tooling, see the plan, then (carefully) run it — which keeps the whole
+// CLI predictable for users who already know `web`. The bare `<rubric>` form is
+// the common case and simply forwards to `show`, exactly like `web <category>`.
+func runSkill(cfg config.Config, args []string, fl skillFlags) error { // used by `hackbot skill`
+	rubrics, err := skillsec.Load(checklistsFS, checklistsDir) // load the embedded rubric files
+	if err != nil {                                            // embedded files should always load
+		return err
+	}
+	sub := "" // the subcommand (lowercased); empty means "list"
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+	switch sub { // dispatch
+	case "", "list": // catalog of rubrics
+		if fl.json { // JSON mode
+			return printJSON(rubrics)
+		}
+		fmt.Print(skillsec.List(rubrics)) // human catalog
+		return nil
+	case "show": // show one rubric
+		if len(args) < 2 { // need a rubric...
+			return fmt.Errorf("skill show: missing <rubric> (try: hackbot skill list)") // ...else error
+		}
+		return showSkillRubric(rubrics, args[1], fl.json) // render it
+	case "rules": // the probe catalog
+		return runSkillRules(rubrics, args[1:], fl)
+	case "plan": // map checks to probes
+		return runSkillPlan(rubrics, args[1:], fl)
+	case "run": // guarded evaluation
+		return runSkillEval(cfg, rubrics, args[1:], fl)
+	default: // bare rubric is a convenience for `show`
+		return showSkillRubric(rubrics, args[0], fl.json)
+	}
+}
+
+// showSkillRubric prints one rubric's checks and evidence as text or JSON.
+//
+// The rubric may be a slug (over-privileged-skills), code (OVER-PRIVILEGED-SKILLS),
+// human name (Over-Privileged Skills) or file name (OverPrivilegedSkills.md);
+// skillsec.Find normalizes all four.
+func showSkillRubric(rubrics []skillsec.Rubric, query string, asJSON bool) error { // used by `skill show`
+	r, ok := skillsec.Find(rubrics, query) // look up the rubric
+	if !ok {                               // unknown rubric...
+		return fmt.Errorf("skill: unknown rubric %q (try: hackbot skill list)", query) // ...error with a hint
+	}
+	if asJSON { // JSON mode
+		return printJSON(r)
+	}
+	fmt.Print(r.Summary()) // human mode
+	return nil
+}
+
+// runSkillRules prints the probe catalog: the free/open-source tools first, then
+// the executable probe for every check of every rubric (or of one rubric).
+//
+// WHY show tools before rules: a first-time reader needs to know what hackbot
+// can drive (and how to install it) before the per-check commands make sense.
+func runSkillRules(rubrics []skillsec.Rubric, rest []string, fl skillFlags) error { // used by `skill rules`
+	rules := skillsec.AllRules() // start with the whole catalog
+	if len(rest) > 0 {           // an optional rubric filter...
+		r, ok := skillsec.Find(rubrics, rest[0]) // ...by any handle
+		if !ok {                                 // unknown rubric...
+			return fmt.Errorf("skill rules: unknown rubric %q (try: hackbot skill list)", rest[0])
+		}
+		rules = skillsec.RulesFor(r.Slug) // narrow to one rubric
+	}
+	if fl.json { // JSON mode
+		return printJSON(rules)
+	}
+	tools := skillsec.ToolCatalog()       // the tool map
+	keys := make([]string, 0, len(tools)) // sorted keys for stable output
+	for k := range tools {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)                                    // deterministic order
+	fmt.Printf("%d free/open-source tools:\n", len(keys)) // headline
+	for _, k := range keys {                              // one row per tool
+		t := tools[k] // the tool
+		fmt.Printf("  %-12s %-16s %-16s %s\n", t.Key, t.Name, t.License, t.URL)
+		if t.Install != "" { // install hint, when known
+			fmt.Printf("      install: %s\n", t.Install)
+		}
+	}
+	current := "" // the rubric whose checks we are showing
+	for _, rule := range rules {
+		if rule.Slug != current { // a new rubric...
+			current = rule.Slug // ...announce it
+			fmt.Printf("\n%s\n", current)
+		}
+		for _, p := range rule.Probes { // one line per probe
+			fmt.Printf("  %-6s %s\n", rule.CheckID, probeSummary(p))
+		}
+	}
+	return nil
+}
+
+// probeSummary renders one probe as a single explainable line for `skill rules`.
+func probeSummary(p skillsec.Probe) string { // used by `skill rules`
+	switch p.Kind { // render by kind
+	case skillsec.ProbeSearch: // a pattern scan
+		if p.GoOnly { // only the built-in scanner understands the syntax...
+			return fmt.Sprintf("[builtin-search] %s", p.Pattern) // ...so say that
+		}
+		return fmt.Sprintf("[search] %s", p.Pattern)
+	case skillsec.ProbeExec: // an external command
+		return fmt.Sprintf("[exec %s] %s", p.ToolKey, strings.Join(p.Args, " "))
+	case skillsec.ProbeManual: // a human instruction
+		m := p.Manual
+		if len(m) > 70 { // keep the line scannable...
+			m = m[:70] + "..." // ...while showing where the instruction starts
+		}
+		return fmt.Sprintf("[manual] %s", m)
+	}
+	return fmt.Sprintf("[%s]", p.Kind) // an unregistered kind is still shown, never silent
+}
+
+// runSkillPlan maps every check of one rubric to a probe or manual guidance.
+//
+// WHY render placeholders (no target): a plan is reference material, not an
+// action. Showing "{path}" keeps it honest about where the skill directory goes
+// and avoids implying a scan happened. Pass a directory to `skill run` to fill
+// them in.
+func runSkillPlan(rubrics []skillsec.Rubric, rest []string, fl skillFlags) error { // used by `skill plan`
+	if len(rest) < 1 { // need a rubric...
+		return fmt.Errorf("skill plan: missing <rubric> (try: hackbot skill list)")
+	}
+	r, ok := skillsec.Find(rubrics, rest[0]) // look up the rubric
+	if !ok {                                 // unknown rubric...
+		return fmt.Errorf("skill plan: unknown rubric %q (try: hackbot skill list)", rest[0])
+	}
+	steps := skillsec.Plan(r, "", skillsec.Options{}) // render with placeholders (no target yet)
+	if fl.json {                                      // JSON mode
+		return printJSON(steps)
+	}
+	auto := 0                 // count automated checks
+	for _, s := range steps { // tally
+		if s.Automated {
+			auto++
+		}
+	}
+	fmt.Printf("%s (%s): %d checks, %d automated\n", r.Category, r.Code, len(steps), auto) // headline
+	for _, s := range steps {                                                              // one row per check
+		what := "manual" // default: a human step
+		if s.Automated {
+			what = s.Tool // the tool that would run
+		}
+		cmd := s.Command // the command line, when there is one
+		if cmd == "" {
+			cmd = s.Manual // otherwise the instruction
+		}
+		if len(cmd) > 76 { // keep rows scannable
+			cmd = cmd[:76] + "..."
+		}
+		fmt.Printf("  %-6s %-14s %s\n", s.CheckID, what, cmd)
+	}
+	return nil
+}
+
+// runSkillEval evaluates a skill directory against one rubric. The safety gates —
+// enable_scan plus the target inside allowed_paths — are enforced by the runner
+// itself via the shared ops.CheckScope, with dry-run as the default, so this
+// command can never execute probes without the operator opting in.
+func runSkillEval(cfg config.Config, rubrics []skillsec.Rubric, rest []string, fl skillFlags) error { // used by `skill run`
+	if len(rest) < 2 { // need a rubric and a directory...
+		return fmt.Errorf("skill run: usage: skill run <rubric> <path> (dry-run by default)")
+	}
+	r, ok := skillsec.Find(rubrics, rest[0]) // look up the rubric
+	if !ok {                                 // unknown rubric...
+		return fmt.Errorf("skill run: unknown rubric %q (try: hackbot skill list)", rest[0])
+	}
+	results, err := skillsec.Run(context.Background(), r, rest[1], skillsec.Options{ // guarded run
+		Enable:       cfg.EnableScan,   // master switch
+		AllowedPaths: cfg.AllowedPaths, // path allowlist
+		DryRun:       fl.dryRun,        // dry-run default true
+		Timeout:      fl.timeout,       // per-probe timeout
+		Log:          func(string) {},  // quiet by default
+	})
+	if err != nil { // refused by a gate, or the directory is unusable
+		return fmt.Errorf("skill run: %w", err)
+	}
+	if fl.json { // JSON mode
+		return printJSON(results)
+	}
+	if fl.dryRun { // make the safety state explicit
+		fmt.Println("dry-run: no probes executed (pass -dry-run=false to run)")
+	}
+	counts := map[skillsec.Verdict]int{} // tally per verdict
+	for _, res := range results {        // one row per check
+		counts[res.Verdict]++                                              // tally
+		fmt.Printf("  %-6s %-7s %s\n", res.CheckID, res.Verdict, res.Test) // headline row
+		for _, pr := range res.Probes {                                    // then each probe that produced it
+			what := pr.Command // the command that ran (or the manual instruction)
+			if what == "" {
+				what = pr.Output
+			}
+			if len(what) > 76 { // keep rows scannable
+				what = what[:76] + "..."
+			}
+			fmt.Printf("      %-7s %-14s %s\n", pr.Verdict, pr.Tool, what)
+			if pr.Error != "" { // show why a probe could not run
+				fmt.Printf("        error: %s\n", pr.Error)
+			}
+			if pr.Output != "" && pr.Kind != skillsec.ProbeManual { // evidence, indented
+				lines := strings.Split(pr.Output, "\n") // one line per match
+				const evCap = 6                         // cap per probe so a 200-match file cannot flood the report
+				for i, line := range lines {
+					if i >= evCap { // reached the cap...
+						fmt.Printf("        ... %d more lines\n", len(lines)-evCap)
+						break
+					}
+					if strings.TrimSpace(line) == "" { // skip blank evidence lines
+						continue
+					}
+					fmt.Printf("        %s\n", strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+	var skipped []string // tools that were not installed, for a closing note
+	for _, res := range results {
+		skipped = append(skipped, skillsec.SkippedTools(res.Probes)...)
+	}
+	skipped = uniqueSorted(skipped) // dedupe and order
+	fmt.Printf("%d check(s): %d pass, %d fail, %d review, %d manual, %d skip, %d error\n",
+		len(results), counts[skillsec.VerdictPass], counts[skillsec.VerdictFail],
+		counts[skillsec.VerdictReview], counts[skillsec.VerdictManual],
+		counts[skillsec.VerdictSkip], counts[skillsec.VerdictError])
+	if len(skipped) > 0 { // tell the operator what did not run and how to fix it
+		fmt.Printf("note: install missing tool(s) to evaluate those probes: %s\n", strings.Join(skipped, ", "))
+	}
+	return nil
+}
+
+// uniqueSorted de-duplicates and sorts a slice of strings, for the closing note
+// that lists which tools were not installed during an evaluation.
+func uniqueSorted(in []string) []string { // helper for the eval summary
+	seen := map[string]bool{} // dedupe set
+	var out []string          // result
+	for _, s := range in {    // scan the inputs
+		s = strings.TrimSpace(s) // normalize
+		if s == "" || seen[s] {  // blank or already seen...
+			continue // ...skip it
+		}
+		seen[s] = true       // record it
+		out = append(out, s) // keep it
+	}
+	sort.Strings(out) // deterministic order
+	return out
 }
 
 // opsFlags carries the recon/discover flags into runOps.
@@ -1341,6 +1630,33 @@ var agents = []agentInfo{ // listed by `hackbot agents`
 		Command:     "deps osv <path>",
 		Description: "Dependency scan against the OSV database with osv-scanner",
 		Triggers:    []string{"query OSV for dependency vulnerabilities", "scan manifests with Google's OSV database"},
+	},
+	// Skill-security rubric agents (family: `skill`). One consumer-facing agent
+	// per rubric file under src/agent_files/, plus the guarded evaluator. A drift
+	// test fails if a rubric file has no matching skill-<slug> agent.
+	{
+		Name:        "skill-malicious-skills",
+		Command:     "skill show malicious-skills",
+		Description: "Malicious-skills rubric: provenance, delivery chains, canary testing (1.1-1.6)",
+		Triggers:    []string{"review a skill against the malicious-skills rubric", "check a downloaded skill for delivery red flags"},
+	},
+	{
+		Name:        "skill-over-privileged-skills",
+		Command:     "skill show over-privileged-skills",
+		Description: "Over-privileged-skills rubric: permissions, scope, credential stores (3.1-3.8)",
+		Triggers:    []string{"check a skill's permission surface", "evaluate a skill against the over-privileged rubric"},
+	},
+	{
+		Name:        "skill-insecure-metadata",
+		Command:     "skill show insecure-metadata",
+		Description: "Insecure-metadata rubric: smuggling, unsafe parsers, schema validation (4.1-4.12)",
+		Triggers:    []string{"scan skill metadata for ASCII smuggling and unsafe loaders", "validate a skill against the insecure-metadata rubric"},
+	},
+	{
+		Name:        "skill-evaluate",
+		Command:     "skill run <rubric> <path>",
+		Description: "Evaluate a skill directory against a rubric (guarded, dry-run default)",
+		Triggers:    []string{"run the full skill-security evaluation", "evaluate a downloaded skill directory against a rubric"},
 	},
 }
 

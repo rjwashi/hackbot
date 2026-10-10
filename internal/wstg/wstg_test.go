@@ -25,6 +25,13 @@ const authSample = `# Testing Checklist
 | WSTG-ATHN-02      | Default Credentials |        |       |
 `
 
+// rubricSample is the skill-security rubric table shape (no WSTG ids at all),
+// used to prove Load tolerates non-WSTG Markdown in the same directory.
+const rubricSample = `| # | Check | Evidence to look for |
+|---|-------|---------------------|
+| 3.1 | Does the skill declare a permission manifest? | Manifest present |
+`
+
 // TestParse verifies a checklist table is parsed into code, category, and tests.
 func TestParse(t *testing.T) { // table parsing
 	c, err := Parse("Injection.md", sample) // parse the sample
@@ -70,6 +77,27 @@ func TestLoad(t *testing.T) { // directory loading
 	}
 	if got[0].Slug != "authentication" || got[1].Slug != "injection" { // sorted by slug
 		t.Errorf("order = %q, %q", got[0].Slug, got[1].Slug)
+	}
+}
+
+// TestLoadSkipsNonWSTG verifies a sibling rubric file in the same directory is
+// ignored rather than aborting the load. src/agent_files/ holds skill-security
+// rubrics too, and a new one must never break `hackbot web list`.
+func TestLoadSkipsNonWSTG(t *testing.T) { // mixed-directory tolerance
+	fsys := fstest.MapFS{ // a WSTG checklist next to a skill rubric
+		"checklists/Injection.md":       {Data: []byte(sample)},
+		"checklists/MaliciousSkills.md": {Data: []byte(rubricSample)},
+		"checklists/OverPrivileged.md":  {Data: []byte(rubricSample)},
+	}
+	got, err := Load(fsys, "checklists") // load the mixed directory
+	if err != nil {
+		t.Fatalf("Load on a mixed directory: %v", err)
+	}
+	if len(got) != 1 { // only the WSTG checklist survives
+		t.Fatalf("checklists = %d, want 1 (non-WSTG files skipped)", len(got))
+	}
+	if got[0].Slug != "injection" { // the real WSTG checklist is the one kept
+		t.Errorf("kept %q, want injection", got[0].Slug)
 	}
 }
 

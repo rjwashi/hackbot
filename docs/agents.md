@@ -52,6 +52,10 @@ in sync).
 | `deps-sbom` | `hackbot deps sbom <path>` | Generate a CycloneDX SBOM with syft |
 | `deps-grype` | `hackbot deps grype <path>` | Directory vulnerability scan with grype |
 | `deps-osv` | `hackbot deps osv <path>` | Dependency scan against the OSV database with osv-scanner |
+| `skill-malicious-skills` | `hackbot skill show malicious-skills` | Malicious-skills rubric: provenance, delivery chains, canary testing (1.1-1.6) |
+| `skill-over-privileged-skills` | `hackbot skill show over-privileged-skills` | Over-privileged-skills rubric: permissions, scope, credential stores (3.1-3.8) |
+| `skill-insecure-metadata` | `hackbot skill show insecure-metadata` | Insecure-metadata rubric: smuggling, unsafe parsers, schema validation (4.1-4.12) |
+| `skill-evaluate` | `hackbot skill run <rubric> <path>` | Evaluate a skill directory against a rubric (guarded, dry-run default) |
 <!-- END AGENTS TABLE -->
 
 Underlying packages: `internal/nmap` (parse + analyze + NSE recon),

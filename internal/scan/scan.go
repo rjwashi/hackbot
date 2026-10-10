@@ -17,8 +17,10 @@ import ( // this file's imports
 	"github.com/rjwashi/hackbot/internal/nmap" // reuse the XML parser/model in package nmap
 )
 
-// ErrDisabled is returned when scanning has not been explicitly enabled.
-var ErrDisabled = errors.New("scanning is disabled (set enable_scan=true or HACKBOT_ENABLE_SCAN=1, and provide allowed_targets or allowed_domains)") // sentinel for errors.Is
+// ErrDisabled is returned when scanning has not been explicitly enabled. The
+// hint lists all three allowlists so the message reads correctly whether the
+// target is a host name/IP or a local path (allowed_paths).
+var ErrDisabled = errors.New("scanning is disabled (set enable_scan=true or HACKBOT_ENABLE_SCAN=1, and provide allowed_targets, allowed_domains, or allowed_paths)") // sentinel for errors.Is
 
 // CommandRunner abstracts process execution so scans can be tested without nmap.
 type CommandRunner interface { // small seam that lets tests inject a fake runner
