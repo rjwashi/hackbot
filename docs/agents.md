@@ -1,0 +1,120 @@
+# Agents
+
+hackbot ships a set of small, composable **security agents**. Each agent has one
+job, reads or produces plain data (nmap XML, JSON), and is safe by default
+(scanning is off unless allowlisted, issue creation defaults to dry-run).
+
+Run `hackbot agents` any time to print this list from the binary.
+
+| Agent | Command | What it does |
+| --- | --- | --- |
+| `nmap-analyze` | `hackbot nmap analyze <file>` | Rule-based **exposure** report from an nmap XML file. Flags commonly-sensitive open services (Docker API, Redis, MongoDB, SMB, RDP, databases, …) with a severity. Conservative: reports exposure, not a confirmed vulnerability. |
+| `nmap-recon` | `hackbot nmap recon <file>` | NSE script **reconnaissance**: flattened script output (banners, HTTP titles/headers, SSH host keys, TLS certs) from `-oX` XML, per port and per host. |
+| `nmap-vulscan` | `hackbot nmap vulscan <file>` | **VulDB** matches from [scipag/vulscan](https://github.com/scipag/vulscan) NSE output. Parses `[CVE-…] title` rows and reports them as *potential* (unconfirmed) findings at MEDIUM severity. |
+| `nmap-pipeline` | `hackbot nmap pipeline <file> [-llm] [-issues]` | The full pipeline: `parse → analyze → recon → vulscan → [LLM explanation] → [GitHub issues]`. LLM and issue stages are opt-in; issues default to dry-run. |
+| `cve-category` | `hackbot cve search <category>` | Searches the NIST **NVD** for CVEs by category (`xss`, `sqli`, `rce`, `ssrf`, `xxe`, …), ranked worst-first by CVSS. |
+| `cve-keyword` | `hackbot cve keyword <text>` | Free-text CVE search across NVD. |
+| `cve-scan` | `hackbot cve scan <nmap.xml>` | Derives software queries (`product version`) from an nmap scan and merges matching CVEs into one ranked report. |
+
+Underlying packages: `internal/nmap` (parse + analyze + NSE recon),
+`internal/scan` (guarded runner), `internal/vulscan` (VulDB matching),
+`internal/cve` (NVD client/agent), `internal/agent` (pipeline).
+
+## Recommended nmap usage
+
+```bash
+# Install vulscan under nmap's scripts dir (documented install):
+#   git clone https://github.com/scipag/vulscan /usr/share/nmap/scripts/vulscan
+
+# Guarded live scan with the safe recon profile plus vulscan:
+hackbot nmap scan 192.168.1.10 -vulscan
+
+# Or point at a custom vulscan checkout and database:
+HACKBOT_VULSCAN_DIR=/opt/vulscan hackbot nmap scan 192.168.1.10 -vulscan
+HACKBOT_VULSCAN_DB=cve.csv      hackbot nmap scan 192.168.1.10 -vulscan
+
+# Analyze an existing scan that already contains vulscan output:
+hackbot nmap vulscan scan.xml
+hackbot nmap vulscan scan.xml -json
+```
+
+`-vulscan` appends `vulscan/vulscan.nse` (or `<vulscan_dir>/vulscan.nse`) to the
+script list and adds `vulscandb=<db>` to `--script-args` when a database is
+configured. `-scripts`/`-script-args` still win for full manual control.
+
+## Gathering reports and relevant resources (recommendations)
+
+The agents deliberately report *evidence* and stay conservative. To turn that
+into a richer, lower-noise vulnerability program, these are the highest-value
+improvements, roughly in order:
+
+### 1. Enrich, then prioritize (biggest signal gain)
+- **EPSS** (Exploit Prediction Scoring System, `https://api.first.org/data/v1/epss`)
+  gives the probability a CVE is exploited in the wild. Sort by EPSS, not just
+  CVSS — a CVSS 7 with high EPSS beats a CVSS 9.8 with none.
+- **CISA KEV** (`https://www.cisa.gov/known-exploited-vulnerabilities-catalog`)
+  is the authoritative "exploited in the wild" list. Anything in KEV should be
+  top priority and can auto-raise severity.
+- **Cross-link vulscan → NVD**: `vulscan.CVEs()` already returns the CVE ids
+  from an offline match; feed them to the `internal/cve` NVD client to attach
+  CVSS/EPSS/KEV. This is the single most useful next step and is a natural
+  composition of the two agents that already exist.
+
+### 2. Add more data sources behind the same `Searcher` seam
+`internal/cve.Searcher` is a one-method interface, so sources are pluggable:
+- **OSV.dev** (`https://api.osv.dev/v1/query`) — package/ecosystem aware, great
+  for dependencies and distro packages; supports batch queries.
+- **GitHub Advisory Database (GHSA)** — via the GitHub GraphQL/REST API; pairs
+  well with `gh`, which hackbot already uses for issues.
+- **Exploit-DB** — for public exploit availability (strong prioritization hint).
+- **Vulners / VulnCheck** — commercial but high-fidelity aggregators with free
+  tiers; drop-in as another `Searcher`.
+- **CWE taxonomy** — already used as the category mapping; keep categories
+  pinned to CWEs so results are reproducible.
+
+### 3. Make results trustworthy and de-duplicated
+- **CPE-based matching**: nmap already emits `cpe:/...` on many services
+  (`internal/nmap.Service.CPEs`). Querying NVD by `cpeName`/`virtualMatchString`
+  is far more precise than free-text `keywordSearch`. Prefer CPE, fall back to
+  keyword.
+- **Version comparison**: a keyword match on "nginx 1.24.0" can match CVEs for
+  other versions. Parse the affected-version ranges from NVD and filter, or at
+  minimum label matches as *potential* (as `internal/vulscan` does).
+- **De-duplicate across sources** by CVE id (already done within
+  `SearchScan`), and record the source per result for provenance.
+- **VEX**: emit CycloneDX/OpenVEX so a "not affected" decision is machine
+  readable and suppressible downstream.
+
+### 4. Respect the sources (rate limits, caching, etiquette)
+- NVD allows **5 requests / 30s without an API key** and **50 / 30s with one**.
+  Set `HACKBOT_NVD_API_KEY` (config `nvd_api_key`) in CI/hosted runs. The
+  client already sends the `apiKey` header.
+- Add a small **on-disk cache** (e.g. SQLite or JSON files keyed by query) with
+  a TTL so repeated runs and `cve scan` don't re-hit NVD. Honor `ETag`.
+- Batch/space requests; `SearchScan` already caps itself at
+  `maxScanQueries = 5`.
+
+### 5. Output formats that fit into tooling
+- Keep **JSON** as the machine format (already the default with `-json`).
+- Add **SARIF** for CI code-scanning ingestion (GitHub code scanning).
+- Add **CycloneDX** for SBOM/VEX interchange.
+- Keep human summaries stable; they're what people paste into tickets.
+
+### 6. Safety and scope stay paramount
+- Only scan systems you own or are explicitly authorized to test. The scanner
+  refuses targets outside `allowed_targets` and requires `enable_scan=true`.
+- Issue creation is dry-run by default; keep the `-min-severity` gate
+  (vulscan findings are MEDIUM *potential*, so they don't auto-file at the
+  default HIGH threshold).
+- Prefer conservative wording ("potential", "exposure", "not confirmed") so
+  reports aren't mistaken for confirmed exploits.
+
+## Possible next steps
+
+1. **vulscan → NVD enrichment**: a `hackbot vulscan enrich <file>` command that
+   takes vulscan CVE ids and attaches CVSS/EPSS/KEV via `internal/cve`.
+2. **CPE-first matching** in `internal/cve` (`cpeName` queries from
+   `Service.CPEs`).
+3. **EPSS/KEV sorting** in the `cve` agent ranking.
+4. **On-disk cache** for NVD responses.
+5. **SARIF/CycloneDX exporters** for CI.

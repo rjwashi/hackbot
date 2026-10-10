@@ -35,6 +35,15 @@ type Config struct { // one struct with JSON tags; env overrides applied after l
 	// caller's default recon profile"; a non-nil empty list means "no scripts".
 	// Overridable via HACKBOT_NMAP_SCRIPTS (comma-separated; "none" disables).
 	NmapScripts []string `json:"nmap_scripts"` // e.g. ["banner","http-title"]
+	// NmapScriptArgs is passed to nmap as --script-args (e.g. "vulscandb=cve.csv").
+	// Overridable via HACKBOT_NMAP_SCRIPT_ARGS.
+	NmapScriptArgs string `json:"nmap_script_args"` // optional NSE script arguments
+	// VulscanDir is the directory holding vulscan.nse and its CSV databases.
+	// Overridable via HACKBOT_VULSCAN_DIR.
+	VulscanDir string `json:"vulscan_dir"` // used by the vulscan recon agent
+	// VulscanDB selects a single vulscan database (e.g. "cve.csv").
+	// Overridable via HACKBOT_VULSCAN_DB.
+	VulscanDB string `json:"vulscan_db"` // passed to nmap as vulscandb=<name>
 
 	// ---- agent pipeline ----
 
@@ -107,6 +116,15 @@ func Load(path string) (Config, error) { // main constructor
 	}
 	if v := os.Getenv("HACKBOT_NMAP_SCRIPTS"); v != "" { // env override for the NSE script list
 		cfg.NmapScripts = parseScripts(v) // comma list, or "none"/"off" to disable
+	}
+	if v := os.Getenv("HACKBOT_NMAP_SCRIPT_ARGS"); v != "" { // env override for NSE script args
+		cfg.NmapScriptArgs = v
+	}
+	if v := os.Getenv("HACKBOT_VULSCAN_DIR"); v != "" { // env override for the vulscan directory
+		cfg.VulscanDir = v
+	}
+	if v := os.Getenv("HACKBOT_VULSCAN_DB"); v != "" { // env override for the vulscan database
+		cfg.VulscanDB = v
 	}
 	if v := os.Getenv("HACKBOT_LLM_BASE_URL"); v != "" { // env override for LLM base URL
 		cfg.LLMBaseURL = v

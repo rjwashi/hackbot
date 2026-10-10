@@ -122,3 +122,20 @@ func TestNVDEnv(t *testing.T) { // CVE source config
 		t.Errorf("nvd cfg = %+v", cfg)
 	}
 }
+
+// TestVulscanEnv verifies the vulscan and NSE-arg env overrides.
+func TestVulscanEnv(t *testing.T) { // vulscan recon config
+	t.Setenv("HACKBOT_VULSCAN_DIR", "/opt/vulscan")          // directory override
+	t.Setenv("HACKBOT_VULSCAN_DB", "cve.csv")                // database override
+	t.Setenv("HACKBOT_NMAP_SCRIPT_ARGS", "vulscanshowall=1") // NSE arg override
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.VulscanDir != "/opt/vulscan" || cfg.VulscanDB != "cve.csv" { // directory + db applied
+		t.Errorf("vulscan cfg = %+v", cfg)
+	}
+	if cfg.NmapScriptArgs != "vulscanshowall=1" { // script args applied
+		t.Errorf("script args = %q", cfg.NmapScriptArgs)
+	}
+}

@@ -47,6 +47,9 @@ func TestRunAnalyzeOnly(t *testing.T) { // defaults
 	if len(rep.Recon) == 0 { // recon must populate from the fixture's NSE scripts
 		t.Fatal("expected recon items")
 	}
+	if len(rep.Vulscan) == 0 { // vulscan matches must populate from the fixture
+		t.Fatal("expected vulscan results")
+	}
 	if rep.Narrative != "" || len(rep.Issues) != 0 { // optional stages must be off
 		t.Error("LLM/issues should be off by default")
 	}
@@ -206,6 +209,9 @@ func TestReportJSONAndSummary(t *testing.T) { // output helpers
 	}
 	if !strings.Contains(rep.Summary(), "recon") { // and the recon section
 		t.Error("summary missing recon section")
+	}
+	if !strings.Contains(rep.Summary(), "vulscan") { // and the vulscan section
+		t.Error("summary missing vulscan section")
 	}
 }
 

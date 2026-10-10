@@ -13,7 +13,8 @@ import ( // imports for this file
 	"sort"          // ordering severities when rendering the summary line
 	"strings"       // Builder + Join/ToLower for text assembly
 
-	"github.com/rjwashi/hackbot/internal/nmap" // the findings we operate on
+	"github.com/rjwashi/hackbot/internal/nmap"    // the findings we operate on
+	"github.com/rjwashi/hackbot/internal/vulscan" // offline vulnerability matches
 )
 
 // Options controls which pipeline stages run.
@@ -35,6 +36,7 @@ type Report struct { // field tags give a clean JSON shape for `-json`
 	HostsDown int              `json:"hosts_down"`          // unreachable hosts
 	Findings  []nmap.Finding   `json:"findings"`            // ranked risk findings
 	Recon     []nmap.ReconItem `json:"recon,omitempty"`     // NSE script reconnaissance
+	Vulscan   []vulscan.Result `json:"vulscan,omitempty"`   // vulscan (VulDB) matches
 	Narrative string           `json:"narrative,omitempty"` // LLM explanation, if any
 	Issues    []string         `json:"issues,omitempty"`    // created issue URLs (or dry-run notes)
 	Skipped   []string         `json:"skipped,omitempty"`   // reasons stages were skipped
@@ -57,6 +59,7 @@ func Run(ctx context.Context, scan *nmap.Scan, opts Options) (*Report, error) { 
 		HostsDown: len(scan.Hosts) - len(scan.UpHosts()), // the remainder were down
 		Findings:  nmap.Analyze(scan),                    // rule-based analysis
 		Recon:     nmap.Recon(scan),                      // NSE script reconnaissance
+		Vulscan:   vulscan.Parse(scan),                   // vulscan (VulDB) matches
 	}
 
 	// Stage: LLM explanation.
@@ -130,6 +133,14 @@ func buildPrompt(rep *Report) string { // pure function; keeps prompting testabl
 			fmt.Fprintf(&b, "- [%s] %s: %s\n", r.Script, r.Host, strings.ReplaceAll(r.Output, "\n", " ")) // flatten newlines
 		}
 	}
+	if len(rep.Vulscan) > 0 { // include vulscan matches when present
+		b.WriteString("\nVulnerability database matches (vulscan, potential not confirmed):\n") // grounded heading
+		for _, vr := range rep.Vulscan {                                                        // one group per target
+			for _, m := range vr.Matches { // one bullet per match
+				fmt.Fprintf(&b, "- [%s] %s:%d/%s (%s): %s\n", m.ID, vr.Host, vr.Port, vr.Protocol, vr.Service, m.Title)
+			}
+		}
+	}
 	return b.String() // the final prompt
 }
 
@@ -145,6 +156,23 @@ func (r *Report) Summary() string { // used by the CLI when -json is absent
 		b.WriteString("\n--- recon ---\n") // section header
 		for _, it := range r.Recon {       // one block per recon item
 			fmt.Fprintf(&b, "  %s\n", it.String()) // ReconItem.String() renders the detail
+		}
+	}
+	if len(r.Vulscan) > 0 { // only if vulscan produced matches
+		b.WriteString("\n--- vulscan (potential) ---\n") // section header
+		for _, vr := range r.Vulscan {                   // one block per target
+			target := vr.Host // host...
+			if vr.Port > 0 {  // ...with port when present
+				target = fmt.Sprintf("%s:%d/%s", vr.Host, vr.Port, vr.Protocol)
+			}
+			fmt.Fprintf(&b, "  %s\n", target) // target line
+			for _, m := range vr.Matches {    // then each match
+				if m.Title != "" { // with title when present
+					fmt.Fprintf(&b, "    [%s] %s\n", m.ID, m.Title)
+				} else {
+					fmt.Fprintf(&b, "    [%s]\n", m.ID)
+				}
+			}
 		}
 	}
 	if r.Narrative != "" { // only if the LLM stage ran

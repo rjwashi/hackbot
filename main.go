@@ -12,14 +12,16 @@ import ( // imports for the whole CLI
 	"flag"          // stdlib flag parsing for subcommand flags
 	"fmt"           // printing and error formatting
 	"os"            // args, exit codes, stderr
+	"path/filepath" // join vulscan script paths
 	"strings"       // arg/severity/string helpers
 
-	"github.com/rjwashi/hackbot/internal/agent"  // the pipeline
-	"github.com/rjwashi/hackbot/internal/bot"    // the core bot loop + Python bridge
-	"github.com/rjwashi/hackbot/internal/config" // configuration loading
-	"github.com/rjwashi/hackbot/internal/cve"    // CVE search (NVD) agent
-	"github.com/rjwashi/hackbot/internal/nmap"   // XML parsing + analysis
-	"github.com/rjwashi/hackbot/internal/scan"   // guarded scanning
+	"github.com/rjwashi/hackbot/internal/agent"   // the pipeline
+	"github.com/rjwashi/hackbot/internal/bot"     // the core bot loop + Python bridge
+	"github.com/rjwashi/hackbot/internal/config"  // configuration loading
+	"github.com/rjwashi/hackbot/internal/cve"     // CVE search (NVD) agent
+	"github.com/rjwashi/hackbot/internal/nmap"    // XML parsing + analysis
+	"github.com/rjwashi/hackbot/internal/scan"    // guarded scanning
+	"github.com/rjwashi/hackbot/internal/vulscan" // vulscan (VulDB) recon agent
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -35,11 +37,13 @@ Commands:
   run                       Run the bot once (loads config, executes bot steps)
   py <helper> [args...]     Run a Python helper (Go->Python escape hatch)
   version                   Print version
+  agents                    List the available agents
   help                      Show this help
 
   nmap parse   <file>       Parse an nmap XML file and list hosts/ports
   nmap analyze <file>       Parse + rule-based risk report
   nmap recon   <file>       Parse + list NSE script (recon) results
+  nmap vulscan <file>       Parse + list vulscan (VulDB) vulnerability matches
   nmap scan    <target>     Run a GUARDED nmap scan, then analyze + recon
   nmap pipeline <file>      Full pipeline: analyze [+ llm] [+ issues]
 
@@ -55,6 +59,7 @@ Common flags:
 nmap scan flags:
   -scripts LIST             NSE scripts to run (default: safe recon set; "none" disables)
   -script-args STR          Extra args passed to nmap --script-args
+  -vulscan                  Add vulscan (VulDB) recon to the scan
 
 nmap pipeline flags:
   -llm                      Ask the configured LLM to explain/prioritize
@@ -83,7 +88,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap", "cve": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve", "agents": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -116,6 +121,7 @@ func runCommand(command string, args []string) error { // shared preamble
 	// nmap scan (NSE recon) flags.
 	scripts := fs.String("scripts", "", "NSE scripts for nmap scan (comma list; default recon set)") // recon scripts
 	scriptArgs := fs.String("script-args", "", "extra args for nmap --script-args")                  // script arguments
+	addVulscan := fs.Bool("vulscan", false, "add vulscan (VulDB) recon to the scan")                 // vulscan toggle
 
 	// cve (CVE search) flags.
 	limit := fs.Int("limit", 20, "max CVE results to show")              // display cap
@@ -135,6 +141,9 @@ func runCommand(command string, args []string) error { // shared preamble
 	case "hello": // simple greeting
 		fmt.Printf("Hello from hackbot! (config: %s)\n", cfg.String()) // show config summary
 		return nil
+	case "agents": // list the available agents
+		printAgents()
+		return nil
 	case "run": // one bot cycle
 		return bot.New(cfg).Run(context.Background())
 	case "py": // Python escape hatch
@@ -150,6 +159,7 @@ func runCommand(command string, args []string) error { // shared preamble
 			maxIssues:   *maxIssues,    // cap
 			scripts:     *scripts,      // NSE scripts
 			scriptArgs:  *scriptArgs,   // script args
+			vulscan:     *addVulscan,   // vulscan toggle
 		})
 	case "cve": // CVE search subcommands
 		return runCVE(cfg, fs.Args(), cveFlags{ // collect flags
@@ -172,12 +182,13 @@ type nmapFlags struct { // small struct keeps runNmap's signature tidy
 	maxIssues   int    // issue cap
 	scripts     string // comma-separated NSE scripts for `nmap scan`
 	scriptArgs  string // value for nmap --script-args
+	vulscan     bool   // add vulscan to the scan's script list
 }
 
 // runNmap dispatches the parse/analyze/recon/scan/pipeline subcommands.
 func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap entry point
 	if len(args) < 1 { // need a subcommand...
-		return fmt.Errorf("nmap: missing subcommand (parse|analyze|recon|scan|pipeline)") // ...else error
+		return fmt.Errorf("nmap: missing subcommand (parse|analyze|recon|vulscan|scan|pipeline)") // ...else error
 	}
 	sub := args[0]   // the subcommand name
 	rest := args[1:] // its arguments
@@ -227,16 +238,35 @@ func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap ent
 		printRecon(items) // human mode
 		return nil
 
+	case "vulscan": // vulscan (VulDB) matches only
+		if len(rest) < 1 { // need a file...
+			return fmt.Errorf("nmap vulscan: missing <file>")
+		}
+		sc, err := nmap.ParseFile(rest[0]) // read + parse XML
+		if err != nil {
+			return err
+		}
+		results := vulscan.Parse(sc) // parse vulscan output
+		if fl.json {                 // JSON mode
+			return printJSON(results)
+		}
+		fmt.Print(vulscan.Summary(sc)) // human mode
+		return nil
+
 	case "scan": // guarded live scan
 		if len(rest) < 1 {
 			return fmt.Errorf("nmap scan: missing <target>")
 		}
+		scriptsList := resolveScripts(fl.scripts, cfg.NmapScripts) // NSE scripts
+		if fl.vulscan {                                            // optionally add vulscan...
+			scriptsList = appendUnique(scriptsList, vulscanScriptPath(cfg.VulscanDir)) // ...to the list
+		}
 		scanner := scan.New(scan.Options{ // build a scanner from config (safety gates included)
-			NmapPath:       cfg.NmapPath,                                // nmap binary
-			Enable:         cfg.EnableScan,                              // master switch (default false)
-			AllowedTargets: cfg.AllowedTargets,                          // allowlist
-			Scripts:        resolveScripts(fl.scripts, cfg.NmapScripts), // NSE recon scripts
-			ScriptArgs:     fl.scriptArgs,                               // optional --script-args
+			NmapPath:       cfg.NmapPath,                                                                               // nmap binary
+			Enable:         cfg.EnableScan,                                                                             // master switch (default false)
+			AllowedTargets: cfg.AllowedTargets,                                                                         // allowlist
+			Scripts:        scriptsList,                                                                                // NSE recon scripts
+			ScriptArgs:     withVulscanDB(firstNonEmpty(fl.scriptArgs, cfg.NmapScriptArgs), fl.vulscan, cfg.VulscanDB), // --script-args
 		}, nil) // nil runner => real ExecRunner
 		sc, err := scanner.Scan(context.Background(), rest[0]) // guarded scan
 		if err != nil {
@@ -246,9 +276,10 @@ func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap ent
 		if fl.json {                 // JSON mode
 			return printJSON(findings)
 		}
-		printScan(sc)              // show what was found
-		printFindings(findings)    // and the risk report
-		printRecon(nmap.Recon(sc)) // and any NSE recon output
+		printScan(sc)                  // show what was found
+		printFindings(findings)        // and the risk report
+		printRecon(nmap.Recon(sc))     // and any NSE recon output
+		fmt.Print(vulscan.Summary(sc)) // and any vulscan matches
 		return nil
 
 	case "pipeline": // full modular pipeline on an existing file
@@ -373,6 +404,66 @@ func printCVECategories() { // used by `cve categories`
 	fmt.Printf("%d categories:\n", len(cve.Categories)) // headline
 	for _, c := range cve.Categories {                  // one row per category
 		fmt.Printf("  %-22s %-9s %s\n", c.Name, c.CWE, c.Description) // name, CWE, description
+	}
+}
+
+// vulscanScriptPath returns the NSE script path/name for vulscan.
+//
+// When VulscanDir is configured we point nmap at the script file directly;
+// otherwise we rely on vulscan being installed under nmap's scripts directory
+// (the documented install) as "vulscan/vulscan.nse".
+func vulscanScriptPath(dir string) string { // used by `nmap scan -vulscan`
+	if strings.TrimSpace(dir) != "" { // an explicit directory wins...
+		return filepath.Join(dir, "vulscan.nse") // ...e.g. /opt/vulscan/vulscan.nse
+	}
+	return "vulscan/vulscan.nse" // documented default install location
+}
+
+// appendUnique appends s to list unless it is already present.
+func appendUnique(list []string, s string) []string { // keeps the script list clean
+	for _, v := range list { // scan existing entries...
+		if v == s { // ...and skip duplicates
+			return list
+		}
+	}
+	return append(list, s) // add the new entry
+}
+
+// withVulscanDB adds vulscandb=<db> to the script args when vulscan is on.
+func withVulscanDB(args string, enabled bool, db string) string { // builds --script-args
+	if !enabled || strings.TrimSpace(db) == "" { // nothing to add...
+		return args // ...leave the args unchanged
+	}
+	kv := "vulscandb=" + strings.TrimSpace(db) // the vulscan argument
+	if strings.TrimSpace(args) == "" {         // no existing args...
+		return kv // ...use just the vulscan arg
+	}
+	return args + "," + kv // otherwise append it
+}
+
+// agentInfo describes one available agent for `hackbot agents`.
+type agentInfo struct { // rows in the agent listing
+	Name        string // short agent name
+	Command     string // how to invoke it
+	Description string // what it does
+}
+
+// agents is the registry of security agents the CLI exposes.
+var agents = []agentInfo{ // listed by `hackbot agents`
+	{"nmap-analyze", "nmap analyze <file>", "Rule-based exposure report from an nmap XML file"},
+	{"nmap-recon", "nmap recon <file>", "NSE script reconnaissance (banners, titles, headers, keys)"},
+	{"nmap-vulscan", "nmap vulscan <file>", "VulDB vulnerability matches from vulscan NSE output"},
+	{"nmap-pipeline", "nmap pipeline <file> [-llm] [-issues]", "Full pipeline: analyze + recon + vulscan [+ LLM] [+ issues]"},
+	{"cve-category", "cve search <category>", "Search NVD for CVEs by category (xss, sqli, rce, ...)"},
+	{"cve-keyword", "cve keyword <text>", "Free-text CVE search across NVD"},
+	{"cve-scan", "cve scan <nmap.xml>", "Find CVEs for software nmap fingerprinted"},
+}
+
+// printAgents lists the available agents.
+func printAgents() { // used by `hackbot agents`
+	fmt.Printf("%d agents:\n", len(agents)) // headline
+	for _, a := range agents {              // one row per agent
+		fmt.Printf("  %-14s %-40s %s\n", a.Name, a.Command, a.Description)
 	}
 }
 

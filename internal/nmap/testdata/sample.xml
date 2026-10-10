@@ -59,6 +59,7 @@
         <script id="redis-info" output="redis_version:7.0.12">
           <elem key="redis_version">7.0.12</elem>
         </script>
+        <script id="vulscan" output="[CVE-2022-0543] Redis Lua sandbox escape&#10;[CVE-2023-28856] Redis RESTORE command RCE&#10;[OSVDB-100500] Redis information disclosure"/>
       </port>
     </ports>
   </host>

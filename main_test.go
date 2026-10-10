@@ -1,8 +1,9 @@
 package main // tests the unexported CLI helpers directly
 
 import ( // test imports
-	"flag"    // construct a FlagSet to exercise reorderArgs
-	"testing" // the testing framework
+	"flag"          // construct a FlagSet to exercise reorderArgs
+	"path/filepath" // platform-independent expected vulscan paths
+	"testing"       // the testing framework
 
 	"github.com/rjwashi/hackbot/internal/nmap" // Severity type for parseSeverity tests
 )
@@ -93,5 +94,42 @@ func TestResolveScripts(t *testing.T) { // script resolution
 	}
 	if got := parseScriptList("a, b ,, c"); len(got) != 3 || got[2] != "c" { // comma parsing drops blanks
 		t.Errorf("parseScriptList = %v", got)
+	}
+}
+
+// TestVulscanHelpers verifies the vulscan script/arg helpers.
+func TestVulscanHelpers(t *testing.T) { // vulscan wiring helpers
+	if got := vulscanScriptPath(""); got != "vulscan/vulscan.nse" { // default docs install
+		t.Errorf("vulscanScriptPath(\"\") = %q", got)
+	}
+	if got := vulscanScriptPath("/opt/vulscan"); got != filepath.Join("/opt/vulscan", "vulscan.nse") { // explicit dir
+		t.Errorf("vulscanScriptPath = %q", got)
+	}
+	if got := appendUnique([]string{"banner"}, "vulscan/vulscan.nse"); len(got) != 2 { // appended
+		t.Errorf("appendUnique = %v", got)
+	}
+	if got := appendUnique([]string{"vulscan/vulscan.nse"}, "vulscan/vulscan.nse"); len(got) != 1 { // no duplicate
+		t.Errorf("appendUnique dup = %v", got)
+	}
+	if got := withVulscanDB("", true, "cve.csv"); got != "vulscandb=cve.csv" { // only the vulscan arg
+		t.Errorf("withVulscanDB = %q", got)
+	}
+	if got := withVulscanDB("x=1", true, "cve.csv"); got != "x=1,vulscandb=cve.csv" { // appended
+		t.Errorf("withVulscanDB append = %q", got)
+	}
+	if got := withVulscanDB("x=1", false, "cve.csv"); got != "x=1" { // disabled: unchanged
+		t.Errorf("withVulscanDB disabled = %q", got)
+	}
+}
+
+// TestAgentsRegistry verifies the agent listing is populated and complete.
+func TestAgentsRegistry(t *testing.T) { // `hackbot agents`
+	if len(agents) == 0 {
+		t.Fatal("no agents registered")
+	}
+	for _, a := range agents { // every row needs all three columns
+		if a.Name == "" || a.Command == "" || a.Description == "" {
+			t.Errorf("incomplete agent: %+v", a)
+		}
 	}
 }
