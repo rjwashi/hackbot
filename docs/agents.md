@@ -31,12 +31,24 @@ in sync).
 | `web-business-logic` | `hackbot web show business-logic` | OWASP WSTG business logic testing checklist (WSTG-BUSL) |
 | `web-client-side` | `hackbot web show client-side` | OWASP WSTG client-side testing checklist (WSTG-CLNT) |
 | `web-api-testing` | `hackbot web show api-testing` | OWASP WSTG API testing checklist (WSTG-APIT) |
+| `recon-subdomains` | `hackbot recon subdomains <target>` | Passive subdomain enumeration with subfinder (OSINT) |
+| `recon-dns` | `hackbot recon dns <target>` | Bulk DNS resolution with dnsx |
+| `recon-ports` | `hackbot recon ports <target>` | Fast common-port scan with naabu |
+| `recon-services` | `hackbot recon services <target>` | Service/version inventory with nmap |
+| `recon-http` | `hackbot recon http <target>` | HTTP probe (status, title, tech) with httpx |
+| `recon-whois` | `hackbot recon whois <target>` | WHOIS registration/ownership lookup (OSINT) |
+| `recon-urls` | `hackbot recon urls <target>` | Fetch known URLs from public archives with gau (OSINT) |
+| `discover-dirs` | `hackbot discover dirs <target>` | Directory discovery with ffuf |
+| `discover-files` | `hackbot discover files <target>` | File discovery with gobuster |
+| `discover-extensions` | `hackbot discover extensions <target>` | Extension brute force (backups, scripts) with gobuster |
+| `discover-vhosts` | `hackbot discover vhosts <target>` | Virtual host discovery by fuzzing the Host header with ffuf |
+| `discover-params` | `hackbot discover params <target>` | Hidden parameter discovery with ffuf |
 <!-- END AGENTS TABLE -->
 
 Underlying packages: `internal/nmap` (parse + analyze + NSE recon),
-`internal/scan` (guarded runner), `internal/vulscan` (VulDB matching),
+`internal/scan` (guarded runner + scope), `internal/vulscan` (VulDB matching),
 `internal/cve` (NVD client/agent), `internal/wstg` (WSTG checklists),
-`internal/agent` (pipeline).
+`internal/ops` (recon + content-discovery engine), `internal/agent` (pipeline).
 
 ## Web Security Testing (WSTG) agents
 
@@ -58,6 +70,49 @@ hackbot web list -json            # machine-readable catalog
 `src/agent_files/` requires a matching `web-<slug>` agent;
 `TestWebAgentsCoverChecklists` fails until you add one, and
 `TestChecklistsEmbedded` verifies the embedded files load.
+
+Beyond displaying checklists, `internal/wstg` maps each test to a free tool and
+can run the automatable ones under guard:
+
+```bash
+hackbot web tools                # the free/open-source tool catalog
+hackbot web plan injection       # test -> tool command (or manual guidance)
+hackbot web run injection 10.0.0.1 -test WSTG-INJT-05   # dry-run by default
+```
+
+## Recon / OSINT agents (`recon`)
+
+Seven agents run free recon tools against an allowlisted domain or host. The
+catalog and tasks live in `internal/ops` (`recon.go`):
+
+```bash
+hackbot recon list               # tasks: subdomains, dns, ports, services, http, whois, urls
+hackbot recon tools subdomains   # tools for one capability (subfinder, amass)
+hackbot recon plan               # every task and the command it runs
+hackbot recon subdomains example.com   # guarded (dry-run by default)
+```
+
+Recon operates on **domain names**, which the IP/CIDR allowlist deliberately
+refuses, so `internal/scan/scope.go` adds an explicit `allowed_domains` allowlist
+(a listed domain covers its subdomains, with a strict label boundary).
+
+## Content discovery agents (`discover`)
+
+Five agents brute-force web content with ffuf/gobuster. The catalog lives in
+`internal/ops` (`discovery.go`):
+
+```bash
+hackbot discover list
+hackbot discover plan
+hackbot discover dirs example.com         # guarded (dry-run by default)
+hackbot discover vhosts 10.0.0.5 -wordlist /path/to/list.txt
+```
+
+Wordlists come from `wordlist` (config) or `-wordlist`, defaulting to the free
+SecLists `common.txt`. Both `recon` and `discover` share the guarded runner:
+dry-run unless `-dry-run=false`, and real runs require `enable_scan=true` plus an
+allowlisted target. `TestReconDiscoverAgentsCoverTasks` keeps the registry in
+step with the catalogs.
 
 ## Skills
 
@@ -162,7 +217,11 @@ improvements, roughly in order:
 
 ### 6. Safety and scope stay paramount
 - Only scan systems you own or are explicitly authorized to test. The scanner
-  refuses targets outside `allowed_targets` and requires `enable_scan=true`.
+  refuses targets outside `allowed_targets` (IPs/CIDRs) or `allowed_domains`
+  (names) and requires `enable_scan=true`. The `recon`, `discover`, and
+  `web run` agents share this model.
+- `web run`, `recon *`, and `discover *` are **dry-run by default**; pass
+  `-dry-run=false` to send traffic.
 - Issue creation is dry-run by default; keep the `-min-severity` gate
   (vulscan findings are MEDIUM *potential*, so they don't auto-file at the
   default HIGH threshold).
@@ -178,3 +237,8 @@ improvements, roughly in order:
 3. **EPSS/KEV sorting** in the `cve` agent ranking.
 4. **On-disk cache** for NVD responses.
 5. **SARIF/CycloneDX exporters** for CI.
+6. **Recon → discovery chaining**: feed `recon subdomains`/`recon http` output
+   into `discover` so one allowlisted seed expands into a full footprint.
+7. **More agent families** using the same `internal/ops` engine: secrets
+   scanning (gitleaks/trufflehog), dependency/SBOM (trivy/grype/osv-scanner),
+   and cloud posture (prowler).

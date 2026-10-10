@@ -44,6 +44,16 @@ type Config struct { // one struct with JSON tags; env overrides applied after l
 	// VulscanDB selects a single vulscan database (e.g. "cve.csv").
 	// Overridable via HACKBOT_VULSCAN_DB.
 	VulscanDB string `json:"vulscan_db"` // passed to nmap as vulscandb=<name>
+	// AllowedDomains is the allowlist of domains the recon/discovery agents may
+	// touch. It is separate from AllowedTargets (IPs/CIDRs) on purpose: allowing
+	// a CIDR is not consent to hit every domain that happens to resolve into it.
+	// A subdomain is in scope when its parent domain is listed. Overridable via
+	// HACKBOT_ALLOWED_DOMAINS (comma-separated).
+	AllowedDomains []string `json:"allowed_domains"` // e.g. ["example.com"]
+	// Wordlist is the path to a wordlist used by the content-discovery agents
+	// (ffuf/gobuster). Empty falls back to the built-in SecLists default.
+	// Overridable via HACKBOT_WORDLIST.
+	Wordlist string `json:"wordlist"` // e.g. /usr/share/seclists/Discovery/Web-Content/common.txt
 
 	// ---- agent pipeline ----
 
@@ -125,6 +135,12 @@ func Load(path string) (Config, error) { // main constructor
 	}
 	if v := os.Getenv("HACKBOT_VULSCAN_DB"); v != "" { // env override for the vulscan database
 		cfg.VulscanDB = v
+	}
+	if v := os.Getenv("HACKBOT_ALLOWED_DOMAINS"); v != "" { // env override for the domain allowlist
+		cfg.AllowedDomains = splitList(v) // same comma parsing as allowed targets
+	}
+	if v := os.Getenv("HACKBOT_WORDLIST"); v != "" { // env override for the discovery wordlist
+		cfg.Wordlist = v
 	}
 	if v := os.Getenv("HACKBOT_LLM_BASE_URL"); v != "" { // env override for LLM base URL
 		cfg.LLMBaseURL = v

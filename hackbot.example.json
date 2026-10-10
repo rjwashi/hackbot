@@ -4,6 +4,8 @@
   "python_cmd": "python",
   "enable_scan": false,
   "allowed_targets": ["192.168.1.0/24"],
+  "allowed_domains": ["example.com"],
+  "wordlist": "/usr/share/seclists/Discovery/Web-Content/common.txt",
   "nmap_path": "nmap",
   "nmap_scripts": ["banner", "http-title", "http-headers", "ssh-hostkey", "ssl-cert"],
   "nmap_script_args": "",

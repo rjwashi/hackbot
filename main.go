@@ -24,6 +24,7 @@ import ( // imports for the whole CLI
 	"github.com/rjwashi/hackbot/internal/config"  // configuration loading
 	"github.com/rjwashi/hackbot/internal/cve"     // CVE search (NVD) agent
 	"github.com/rjwashi/hackbot/internal/nmap"    // XML parsing + analysis
+	"github.com/rjwashi/hackbot/internal/ops"     // recon + content-discovery engine
 	"github.com/rjwashi/hackbot/internal/scan"    // guarded scanning
 	"github.com/rjwashi/hackbot/internal/vulscan" // vulscan (VulDB) recon agent
 	"github.com/rjwashi/hackbot/internal/wstg"    // WSTG web-security-testing checklists
@@ -73,6 +74,16 @@ Commands:
   web plan <category>       Map each test to a free tool or manual guidance
   web run <category> <tgt>  Run guarded checks (dry-run by default)
 
+  recon list                List recon/OSINT tasks (subdomains, dns, ports, ...)
+  recon tools [group]       List the free recon tools
+  recon plan                Show every recon task and its command
+  recon <task> <target>     Run a recon task (dry-run by default)
+
+  discover list             List content-discovery tasks
+  discover tools [group]    List the free content-discovery tools
+  discover plan             Show every discovery task and its command
+  discover <task> <target>  Run a discovery task (dry-run by default)
+
 Common flags:
   -config PATH              Path to a JSON config file (optional)
   -json                     Machine-readable JSON output (nmap commands)
@@ -82,6 +93,12 @@ web run flags:
   -timeout DURATION         Per-check timeout (default 60s)
   -scheme SCHEME            URL scheme used to build {url} (default https)
   -test ID                  Run only one WSTG test id (e.g. WSTG-INJT-05)
+
+recon/discover flags:
+  -dry-run                  Do not execute tools (default true; pass -dry-run=false)
+  -timeout DURATION         Per-task timeout (default 60s)
+  -scheme SCHEME            URL scheme used to build {url} (default https)
+  -wordlist PATH            Wordlist for content discovery (default: SecLists common.txt)
 
 nmap scan flags:
   -scripts LIST             NSE scripts to run (default: safe recon set; "none" disables)
@@ -105,7 +122,8 @@ agents flags:
   -name NAME                Agent name for -format skill
 
 Safety: scanning is disabled unless enable_scan is true AND the target is in
-allowed_targets. Only scan systems you own or are explicitly authorized to test.
+allowed_targets (IPs/CIDRs) or allowed_domains (names). Only scan systems you own
+or are explicitly authorized to test.
 ` // end of usage text
 
 func main() { // program entry point
@@ -119,7 +137,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -166,6 +184,9 @@ func runCommand(command string, args []string) error { // shared preamble
 	webTimeout := fs.Duration("timeout", 60*time.Second, "per-check timeout for web run") // bound each tool
 	webScheme := fs.String("scheme", "https", "URL scheme for web run (https|http)")      // target URL scheme
 	webTest := fs.String("test", "", "only run this WSTG test id (web run)")              // single-capability filter
+
+	// recon/discover flags.
+	wordlist := fs.String("wordlist", "", "wordlist path for content discovery") // discovery wordlist override
 
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }      // give the flag set our usage text
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil { // parse flags anywhere on the line
@@ -219,6 +240,22 @@ func runCommand(command string, args []string) error { // shared preamble
 			timeout: *webTimeout, // per-check timeout
 			scheme:  *webScheme,  // target URL scheme
 			test:    *webTest,    // optional single-test filter
+		})
+	case "recon": // OSINT reconnaissance agents
+		return runOps(cfg, ops.ReconCatalog(), fs.Args(), opsFlags{ // recon catalog
+			json:     *asJSON,                                                     // JSON output
+			dryRun:   *dryRun,                                                     // dry-run default true
+			timeout:  *webTimeout,                                                 // per-task timeout
+			scheme:   *webScheme,                                                  // URL scheme
+			wordlist: firstNonEmpty(*wordlist, cfg.Wordlist, ops.DefaultWordlist), // wordlist (unused by recon but harmless)
+		})
+	case "discover": // content-discovery agents
+		return runOps(cfg, ops.DiscoveryCatalog(), fs.Args(), opsFlags{ // discovery catalog
+			json:     *asJSON,                                                     // JSON output
+			dryRun:   *dryRun,                                                     // dry-run default true
+			timeout:  *webTimeout,                                                 // per-task timeout
+			scheme:   *webScheme,                                                  // URL scheme
+			wordlist: firstNonEmpty(*wordlist, cfg.Wordlist, ops.DefaultWordlist), // wordlist resolution
 		})
 	}
 	return nil // unreachable
@@ -697,6 +734,194 @@ func runWebChecks(cfg config.Config, checklists []wstg.Checklist, rest []string,
 	return nil
 }
 
+// opsFlags carries the recon/discover flags into runOps.
+//
+// WHY a separate struct (rather than reusing webFlags): the new families share
+// dry-run/timeout/scheme with `web`, but they add a wordlist and drop the WSTG
+// test filter. A dedicated struct keeps each command's contract explicit.
+type opsFlags struct {
+	json     bool          // emit JSON
+	dryRun   bool          // render commands but send nothing (SECURITY: default true)
+	timeout  time.Duration // per-task timeout
+	scheme   string        // URL scheme used to build {url}
+	wordlist string        // resolved wordlist path (flag > config > default)
+}
+
+// runOps dispatches the recon/discover agents against a catalog.
+//
+// Subcommands:
+//
+//	<cmd> list               list the tasks (default)
+//	<cmd> tools [group]      list the free tools, or one group's tools
+//	<cmd> plan [task]        show every task (or one) with its command
+//	<cmd> <task> <target>    run a task (guarded, dry-run default)
+//	<cmd> run <task> <target>  explicit run form
+//
+// WHY the bare `<task> <target>` form: it is the common case, so we accept it
+// directly (like `web <category>`), while `run` stays available for scripts that
+// want an explicit verb.
+func runOps(cfg config.Config, cat *ops.Catalog, args []string, fl opsFlags) error { // used by recon/discover
+	sub := "" // subcommand (lowercased); empty means "list"
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+	switch sub { // dispatch
+	case "", "list": // task catalog
+		if fl.json { // JSON mode
+			return printJSON(cat.Tasks())
+		}
+		fmt.Print(opsList(cat))
+		return nil
+	case "tasks", "show": // alias for list (kept tiny on purpose)
+		if fl.json {
+			return printJSON(cat.Tasks())
+		}
+		fmt.Print(opsList(cat))
+		return nil
+	case "tools": // free tooling
+		return runOpsTools(cat, args[1:], fl)
+	case "plan": // rendered commands
+		return runOpsPlan(cat, args[1:], fl)
+	case "run": // explicit run form
+		if len(args) < 3 { // need <task> <target>
+			return fmt.Errorf("%s run: usage: %s run <task> <target> (dry-run by default)", cat.Name, cat.Name)
+		}
+		return runOpsTask(cfg, cat, args[1], args[2], fl)
+	default: // bare <task> <target>
+		if len(args) < 2 { // a task needs a target
+			return fmt.Errorf("%s: usage: %s <task> <target> (try: hackbot %s list)", cat.Name, cat.Name, cat.Name)
+		}
+		return runOpsTask(cfg, cat, args[0], args[1], fl)
+	}
+}
+
+// opsList renders a catalog's tasks as a short catalog.
+func opsList(cat *ops.Catalog) string { // used by `<cmd> list`
+	tasks := cat.Tasks()                                // declared order
+	var b strings.Builder                               // accumulate text
+	fmt.Fprintf(&b, "%s - %s\n", cat.Name, cat.Summary) // headline
+	fmt.Fprintf(&b, "%d tasks:\n", len(tasks))          // count
+	for _, t := range tasks {                           // one line per task
+		tool, _ := cat.ToolByKey(t.ToolKey) // resolve the tool for display
+		fmt.Fprintf(&b, "  %-12s %-26s [%s]\n", t.Key, t.Name, tool.Name)
+	}
+	return b.String()
+}
+
+// runOpsTools lists the free tool catalog, or one group's tools.
+func runOpsTools(cat *ops.Catalog, rest []string, fl opsFlags) error { // used by `<cmd> tools`
+	if len(rest) == 0 { // whole catalog
+		tools := cat.Tools() // sorted
+		if fl.json {
+			return printJSON(tools)
+		}
+		fmt.Printf("%d free/open-source tools:\n", len(tools))
+		for _, t := range tools {
+			fmt.Printf("  %-12s %-16s %-16s %s\n", t.Key, t.Name, t.License, t.URL)
+			if t.Install != "" {
+				fmt.Printf("      install: %s\n", t.Install)
+			}
+		}
+		return nil
+	}
+	group := strings.ToLower(rest[0]) // a group was named
+	tools := cat.ToolsFor(group)      // resolve it
+	if len(tools) == 0 {              // unknown group...
+		return fmt.Errorf("%s tools: unknown group %q (groups: %s)", cat.Name, rest[0], strings.Join(cat.GroupNames(), ", "))
+	}
+	if fl.json {
+		return printJSON(tools)
+	}
+	fmt.Printf("%s: tools for %q:\n", cat.Name, group)
+	for _, t := range tools {
+		fmt.Printf("  %-12s %-16s %s\n", t.Key, t.Name, t.URL)
+	}
+	return nil
+}
+
+// runOpsPlan shows each task and the command it would run (placeholders intact).
+func runOpsPlan(cat *ops.Catalog, rest []string, fl opsFlags) error { // used by `<cmd> plan`
+	steps := cat.Plan(fl.scheme, "", fl.wordlist) // template render (no target)
+	if len(rest) > 0 {                            // optional single-task filter
+		key := strings.ToLower(rest[0])
+		var filtered []ops.PlanStep
+		for _, s := range steps {
+			if strings.EqualFold(s.TaskKey, key) {
+				filtered = append(filtered, s)
+			}
+		}
+		if len(filtered) == 0 { // unknown task...
+			return fmt.Errorf("%s plan: unknown task %q (try: hackbot %s list)", cat.Name, rest[0], cat.Name)
+		}
+		steps = filtered
+	}
+	if fl.json {
+		return printJSON(steps)
+	}
+	fmt.Printf("%s: %d task(s)\n", cat.Name, len(steps))
+	for _, s := range steps {
+		fmt.Printf("  %-12s %-26s %s\n", s.TaskKey, s.Name, s.Command)
+	}
+	return nil
+}
+
+// runOpsTask runs one task against a target with the same two safety gates as
+// scanning: enable_scan must be true and the target must be inside allowed_targets
+// (IP/CIDR) or allowed_domains (name). We pre-check here for a precise message;
+// the runner enforces the same rules authoritatively. Dry-run needs neither gate
+// because it sends nothing.
+func runOpsTask(cfg config.Config, cat *ops.Catalog, taskKey, target string, fl opsFlags) error { // used by `<cmd> <task>`
+	task, ok := cat.TaskByKey(taskKey) // look up the task
+	if !ok {                           // unknown task...
+		return fmt.Errorf("%s: unknown task %q (try: hackbot %s list)", cat.Name, taskKey, cat.Name)
+	}
+	if !fl.dryRun { // real runs enforce the gates up front
+		if !cfg.EnableScan { // master switch
+			return fmt.Errorf("%s: %w", cat.Name, ops.ErrDisabled)
+		}
+		if !scan.TargetInScope(target, cfg.AllowedTargets, cfg.AllowedDomains) { // allowlist
+			return fmt.Errorf("%s: target %q is not in allowed_targets/allowed_domains; refusing to run", cat.Name, target)
+		}
+	}
+	runner := ops.New(cat, ops.Options{ // assemble the guarded runner
+		Enable:         cfg.EnableScan,
+		AllowedTargets: cfg.AllowedTargets,
+		AllowedDomains: cfg.AllowedDomains,
+		DryRun:         fl.dryRun,
+		Timeout:        fl.timeout,
+		Scheme:         fl.scheme,
+		Wordlist:       fl.wordlist,
+		Log:            func(s string) { fmt.Fprintln(os.Stderr, "hackbot:", s) },
+	})
+	res, err := runner.Run(context.Background(), task, target) // execute (or preview)
+	if err != nil {
+		return err
+	}
+	if fl.json { // JSON mode
+		return printJSON(res)
+	}
+	if fl.dryRun { // make the safety state explicit
+		fmt.Println("dry-run: no traffic sent (pass -dry-run=false to execute)")
+	}
+	status := "ok" // default label
+	switch {       // choose a label
+	case res.DryRun:
+		status = "dry"
+	case !res.OK:
+		status = "error"
+	}
+	fmt.Printf("  [%s] %-12s %s\n", status, res.Task, res.Command) // one line per task
+	if res.Output != "" {                                          // show captured output, indented
+		for _, line := range strings.Split(res.Output, "\n") {
+			fmt.Printf("      %s\n", line)
+		}
+	}
+	if res.Error != "" { // show tool errors
+		fmt.Printf("      error: %s\n", res.Error)
+	}
+	return nil
+}
+
 // vulscanScriptPath returns the NSE script path/name for vulscan.
 //
 // When VulscanDir is configured we point nmap at the script file directly;
@@ -860,6 +1085,82 @@ var agents = []agentInfo{ // listed by `hackbot agents`
 		Command:     "web show api-testing",
 		Description: "OWASP WSTG API testing checklist (WSTG-APIT)",
 		Triggers:    []string{"run the API testing checklist", "test REST and GraphQL APIs"},
+	},
+	// Recon/OSINT agents (family: `recon`). Each maps to one runnable task in the
+	// ops recon catalog; a drift test keeps them aligned with that catalog.
+	{
+		Name:        "recon-subdomains",
+		Command:     "recon subdomains <target>",
+		Description: "Passive subdomain enumeration with subfinder (OSINT)",
+		Triggers:    []string{"enumerate subdomains for a domain", "discover an attack surface from public sources"},
+	},
+	{
+		Name:        "recon-dns",
+		Command:     "recon dns <target>",
+		Description: "Bulk DNS resolution with dnsx",
+		Triggers:    []string{"resolve DNS records for a domain", "check which hostnames are live"},
+	},
+	{
+		Name:        "recon-ports",
+		Command:     "recon ports <target>",
+		Description: "Fast common-port scan with naabu",
+		Triggers:    []string{"scan common ports on a host", "quick port discovery"},
+	},
+	{
+		Name:        "recon-services",
+		Command:     "recon services <target>",
+		Description: "Service/version inventory with nmap",
+		Triggers:    []string{"fingerprint services on a host", "identify versions of exposed services"},
+	},
+	{
+		Name:        "recon-http",
+		Command:     "recon http <target>",
+		Description: "HTTP probe (status, title, tech) with httpx",
+		Triggers:    []string{"probe a web target's status and technologies", "identify the tech stack of a site"},
+	},
+	{
+		Name:        "recon-whois",
+		Command:     "recon whois <target>",
+		Description: "WHOIS registration/ownership lookup (OSINT)",
+		Triggers:    []string{"look up domain ownership", "whois a domain"},
+	},
+	{
+		Name:        "recon-urls",
+		Command:     "recon urls <target>",
+		Description: "Fetch known URLs from public archives with gau (OSINT)",
+		Triggers:    []string{"find historical URLs for a domain", "discover old endpoints from archives"},
+	},
+	// Content-discovery agents (family: `discover`). Each maps to one runnable
+	// task in the ops discovery catalog.
+	{
+		Name:        "discover-dirs",
+		Command:     "discover dirs <target>",
+		Description: "Directory discovery with ffuf",
+		Triggers:    []string{"brute-force directories on a web server", "find hidden paths"},
+	},
+	{
+		Name:        "discover-files",
+		Command:     "discover files <target>",
+		Description: "File discovery with gobuster",
+		Triggers:    []string{"find files and directories on a web server", "gobuster a target"},
+	},
+	{
+		Name:        "discover-extensions",
+		Command:     "discover extensions <target>",
+		Description: "Extension brute force (backups, scripts) with gobuster",
+		Triggers:    []string{"find backup or script files by extension", "look for .bak/.old files"},
+	},
+	{
+		Name:        "discover-vhosts",
+		Command:     "discover vhosts <target>",
+		Description: "Virtual host discovery by fuzzing the Host header with ffuf",
+		Triggers:    []string{"find virtual hosts on an IP", "fuzz the Host header"},
+	},
+	{
+		Name:        "discover-params",
+		Command:     "discover params <target>",
+		Description: "Hidden parameter discovery with ffuf",
+		Triggers:    []string{"find hidden query parameters", "discover unlinked parameters"},
 	},
 }
 

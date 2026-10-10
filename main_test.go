@@ -9,6 +9,7 @@ import ( // test imports
 	"testing"       // the testing framework
 
 	"github.com/rjwashi/hackbot/internal/nmap" // Severity type for parseSeverity tests
+	"github.com/rjwashi/hackbot/internal/ops"  // recon/discovery catalogs
 	"github.com/rjwashi/hackbot/internal/wstg" // load the embedded WSTG checklists
 )
 
@@ -256,6 +257,32 @@ func TestWebAgentsCoverChecklists(t *testing.T) { // registry <-> checklists inv
 		}
 		if want := "web show " + c.Slug; !strings.Contains(a.Command, want) { // command must point at the checklist
 			t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
+		}
+	}
+}
+
+// TestReconDiscoverAgentsCoverTasks verifies every runnable ops task has a
+// matching registry agent (recon-<task> / discover-<task>). This keeps the
+// single-source registry in step with the catalogs, mirroring the WSTG check.
+func TestReconDiscoverAgentsCoverTasks(t *testing.T) { // registry <-> catalog invariant
+	for _, tc := range []struct { // both families
+		prefix string
+		cat    *ops.Catalog
+	}{
+		{"recon-", ops.ReconCatalog()},        // recon tasks -> recon-* agents
+		{"discover-", ops.DiscoveryCatalog()}, // discovery tasks -> discover-* agents
+	} {
+		command := strings.TrimSuffix(tc.prefix, "-") // "recon" / "discover"
+		for _, task := range tc.cat.Tasks() {         // every task needs an agent
+			name := tc.prefix + task.Key // expected agent name
+			a, ok := findAgent(name)     // look it up
+			if !ok {                     // missing agent...
+				t.Errorf("no agent for task %s (expected %q)", task.Key, name)
+				continue
+			}
+			if want := command + " " + task.Key; !strings.Contains(a.Command, want) { // command points at the task
+				t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
+			}
 		}
 	}
 }

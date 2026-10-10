@@ -137,23 +137,47 @@ var toolCatalog = map[string]Tool{ // keyed by Tool.Key
 		Install: "git clone https://github.com/ticarpi/jwt_tool",
 		Notes:   "Analyze and attack JSON Web Tokens.",
 	},
+	"httpx": {
+		Key: "httpx", Name: "httpx", Bin: "httpx", Kind: "fingerprint",
+		URL: "https://github.com/projectdiscovery/httpx", License: "MIT",
+		Install: "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
+		Notes:   "Fast HTTP probing: status, title, tech, headers.",
+	},
+	"wpscan": {
+		Key: "wpscan", Name: "WPScan", Bin: "wpscan", Kind: "scanner",
+		URL: "https://github.com/wpscanteam/wpscan", License: "GPL-3.0",
+		Install: "gem install wpscan",
+		Notes:   "WordPress-specific vulnerability and configuration scan (free tier).",
+	},
+	"feroxbuster": {
+		Key: "feroxbuster", Name: "feroxbuster", Bin: "feroxbuster", Kind: "fuzzer",
+		URL: "https://github.com/epi052/feroxbuster", License: "MIT",
+		Install: "cargo install feroxbuster  # or download a release",
+		Notes:   "Recursive content discovery (Rust, fast).",
+	},
+	"gau": {
+		Key: "gau", Name: "gau (GetAllUrls)", Bin: "gau", Kind: "cli",
+		URL: "https://github.com/lc/gau", License: "MIT",
+		Install: "go install github.com/lc/gau/v2/cmd/gau@latest",
+		Notes:   "Fetch known URLs from public archives (OSINT).",
+	},
 }
 
 // categoryTools maps a checklist slug to the free tools most useful for it.
 // Every category lists at least one tool so every agent has capabilities.
 var categoryTools = map[string][]string{ // slug -> tool keys (catalog order)
-	"information-gathering": {"nmap", "whatweb", "wafw00f", "curl"},
-	"config-management":     {"nuclei", "nikto", "curl", "gobuster", "testssl"},
+	"information-gathering": {"nmap", "whatweb", "wafw00f", "curl", "httpx", "gau"},
+	"config-management":     {"nuclei", "nikto", "curl", "gobuster", "testssl", "feroxbuster"},
 	"identity-management":   {"curl", "ffuf", "nuclei"},
-	"authentication":        {"testssl", "nuclei", "jwt_tool", "zap"},
+	"authentication":        {"testssl", "nuclei", "jwt_tool", "zap", "wpscan"},
 	"authorization":         {"nuclei", "ffuf", "zap", "curl"},
 	"session-management":    {"curl", "jwt_tool", "nuclei", "zap"},
 	"injection":             {"sqlmap", "dalfox", "commix", "sstimap", "nuclei"},
 	"error-handling":        {"curl", "nuclei", "nikto"},
 	"weak-cryptography":     {"testssl", "sslscan", "nmap"},
 	"business-logic":        {"zap", "curl"},
-	"client-side":           {"dalfox", "sstimap", "nuclei", "curl"},
-	"api-testing":           {"schemathesis", "nuclei", "curl"},
+	"client-side":           {"dalfox", "sstimap", "nuclei", "curl", "httpx"},
+	"api-testing":           {"schemathesis", "nuclei", "curl", "httpx"},
 }
 
 // manualHints gives short, per-category guidance for tests that have no
@@ -222,6 +246,22 @@ var checks = []Check{ // one row per automatable capability
 
 	// --- API Testing ---
 	{Slug: "api-testing", TestID: "WSTG-APIT-01", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "api", "-silent"}, Guarded: true}, // API recon templates
+
+	// --- Additional coverage (deepening automation) ---
+	// Each new row below points at a test id that exists in the checklist and a
+	// free tool that meaningfully exercises it; non-automatable tests stay manual.
+	{Slug: "information-gathering", TestID: "WSTG-INFO-01", ToolKey: "gau", Args: []string{"{host}"}, Guarded: true},                                                                   // archived URLs (OSINT)
+	{Slug: "information-gathering", TestID: "WSTG-INFO-08", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "tech", "-silent"}, Guarded: true},                               // framework fingerprint
+	{Slug: "information-gathering", TestID: "WSTG-INFO-09", ToolKey: "httpx", Args: []string{"-u", "{url}", "-silent", "-status-code", "-title", "-tech-detect"}, Guarded: true},       // app fingerprint
+	{Slug: "config-management", TestID: "WSTG-CONF-03", ToolKey: "gobuster", Args: []string{"dir", "-u", "{url}", "-w", "common.txt", "-x", "bak,old,zip,txt,~", "-q"}, Guarded: true}, // sensitive extensions
+	{Slug: "config-management", TestID: "WSTG-CONF-05", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "exposure", "-silent"}, Guarded: true},                               // admin interfaces
+	{Slug: "config-management", TestID: "WSTG-CONF-10", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "takeover", "-silent"}, Guarded: true},                               // subdomain takeover
+	{Slug: "config-management", TestID: "WSTG-CONF-14", ToolKey: "curl", Args: []string{"-sS", "-I", "{url}"}, Guarded: true},                                                          // security headers
+	{Slug: "authorization", TestID: "WSTG-ATHZ-02", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "auth-bypass", "-silent"}, Guarded: true},                                // bypass auth schema
+	{Slug: "session-management", TestID: "WSTG-SESS-01", ToolKey: "curl", Args: []string{"-sS", "-I", "{url}"}, Guarded: true},                                                         // session schema headers
+	{Slug: "weak-cryptography", TestID: "WSTG-CRYP-03", ToolKey: "testssl", Args: []string{"--quiet", "--warnings", "off", "{url}"}, Guarded: true},                                    // unencrypted channels
+	{Slug: "client-side", TestID: "WSTG-CLNT-03", ToolKey: "dalfox", Args: []string{"url", "{url}"}, Guarded: true},                                                                    // HTML injection
+	{Slug: "api-testing", TestID: "WSTG-APIT-99", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "graphql", "-silent"}, Guarded: true},                                      // GraphQL
 }
 
 // Check is a runnable capability: one checklist test, one free tool, one of a
