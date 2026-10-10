@@ -44,6 +44,9 @@ func TestRunAnalyzeOnly(t *testing.T) { // defaults
 	if len(rep.Findings) == 0 { // analysis must run by default
 		t.Fatal("expected findings")
 	}
+	if len(rep.Recon) == 0 { // recon must populate from the fixture's NSE scripts
+		t.Fatal("expected recon items")
+	}
 	if rep.Narrative != "" || len(rep.Issues) != 0 { // optional stages must be off
 		t.Error("LLM/issues should be off by default")
 	}
@@ -200,6 +203,9 @@ func TestReportJSONAndSummary(t *testing.T) { // output helpers
 	}
 	if !strings.Contains(rep.Summary(), "findings") { // summary renderer must mention findings
 		t.Error("summary missing findings line")
+	}
+	if !strings.Contains(rep.Summary(), "recon") { // and the recon section
+		t.Error("summary missing recon section")
 	}
 }
 

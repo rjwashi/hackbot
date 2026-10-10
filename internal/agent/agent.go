@@ -31,12 +31,13 @@ type Options struct { // everything the pipeline needs, injected for testability
 
 // Report is the result of running the pipeline.
 type Report struct { // field tags give a clean JSON shape for `-json`
-	HostsUp   int            `json:"hosts_up"`            // reachable hosts
-	HostsDown int            `json:"hosts_down"`          // unreachable hosts
-	Findings  []nmap.Finding `json:"findings"`            // ranked risk findings
-	Narrative string         `json:"narrative,omitempty"` // LLM explanation, if any
-	Issues    []string       `json:"issues,omitempty"`    // created issue URLs (or dry-run notes)
-	Skipped   []string       `json:"skipped,omitempty"`   // reasons stages were skipped
+	HostsUp   int              `json:"hosts_up"`            // reachable hosts
+	HostsDown int              `json:"hosts_down"`          // unreachable hosts
+	Findings  []nmap.Finding   `json:"findings"`            // ranked risk findings
+	Recon     []nmap.ReconItem `json:"recon,omitempty"`     // NSE script reconnaissance
+	Narrative string           `json:"narrative,omitempty"` // LLM explanation, if any
+	Issues    []string         `json:"issues,omitempty"`    // created issue URLs (or dry-run notes)
+	Skipped   []string         `json:"skipped,omitempty"`   // reasons stages were skipped
 }
 
 // Run executes the pipeline against an already-parsed scan.
@@ -55,6 +56,7 @@ func Run(ctx context.Context, scan *nmap.Scan, opts Options) (*Report, error) { 
 		HostsUp:   len(scan.UpHosts()),                   // reachable hosts
 		HostsDown: len(scan.Hosts) - len(scan.UpHosts()), // the remainder were down
 		Findings:  nmap.Analyze(scan),                    // rule-based analysis
+		Recon:     nmap.Recon(scan),                      // NSE script reconnaissance
 	}
 
 	// Stage: LLM explanation.
@@ -122,6 +124,12 @@ func buildPrompt(rep *Report) string { // pure function; keeps prompting testabl
 		}
 		fmt.Fprintf(&b, "- [%s] %s (%s): %s %s\n", f.Severity, where, f.Service, f.Title, f.Detail) // compact bullet
 	}
+	if len(rep.Recon) > 0 { // include NSE output when present...
+		b.WriteString("\nRecon (NSE script output):\n") // ...under its own heading
+		for _, r := range rep.Recon {                   // one bullet per recon item
+			fmt.Fprintf(&b, "- [%s] %s: %s\n", r.Script, r.Host, strings.ReplaceAll(r.Output, "\n", " ")) // flatten newlines
+		}
+	}
 	return b.String() // the final prompt
 }
 
@@ -132,6 +140,12 @@ func (r *Report) Summary() string { // used by the CLI when -json is absent
 	fmt.Fprintf(&b, "%s\n", severityLine(r.Findings))                                                              // "severity: CRITICAL:2 HIGH:1" line
 	for _, f := range r.Findings {                                                                                 // one indented block per finding
 		fmt.Fprintf(&b, "  %s\n", f.String()) // Finding.String() renders the two-line block
+	}
+	if len(r.Recon) > 0 { // only if NSE scripts produced output
+		b.WriteString("\n--- recon ---\n") // section header
+		for _, it := range r.Recon {       // one block per recon item
+			fmt.Fprintf(&b, "  %s\n", it.String()) // ReconItem.String() renders the detail
+		}
 	}
 	if r.Narrative != "" { // only if the LLM stage ran
 		b.WriteString("\n--- LLM analysis ---\n") // section header

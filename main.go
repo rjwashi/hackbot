@@ -38,12 +38,17 @@ Commands:
 
   nmap parse   <file>       Parse an nmap XML file and list hosts/ports
   nmap analyze <file>       Parse + rule-based risk report
-  nmap scan    <target>     Run a GUARDED nmap scan, then analyze
+  nmap recon   <file>       Parse + list NSE script (recon) results
+  nmap scan    <target>     Run a GUARDED nmap scan, then analyze + recon
   nmap pipeline <file>      Full pipeline: analyze [+ llm] [+ issues]
 
 Common flags:
   -config PATH              Path to a JSON config file (optional)
   -json                     Machine-readable JSON output (nmap commands)
+
+nmap scan flags:
+  -scripts LIST             NSE scripts to run (default: safe recon set; "none" disables)
+  -script-args STR          Extra args passed to nmap --script-args
 
 nmap pipeline flags:
   -llm                      Ask the configured LLM to explain/prioritize
@@ -98,6 +103,10 @@ func runCommand(command string, args []string) error { // shared preamble
 	minSeverity := fs.String("min-severity", "high", "minimum severity for issues") // filing threshold
 	maxIssues := fs.Int("max-issues", 10, "max issues per run")                     // per-run cap
 
+	// nmap scan (NSE recon) flags.
+	scripts := fs.String("scripts", "", "NSE scripts for nmap scan (comma list; default recon set)") // recon scripts
+	scriptArgs := fs.String("script-args", "", "extra args for nmap --script-args")                  // script arguments
+
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }      // give the flag set our usage text
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil { // parse flags anywhere on the line
 		return err // propagate parse errors
@@ -125,6 +134,8 @@ func runCommand(command string, args []string) error { // shared preamble
 			repo:        *repo,         // repo override
 			minSeverity: *minSeverity,  // threshold
 			maxIssues:   *maxIssues,    // cap
+			scripts:     *scripts,      // NSE scripts
+			scriptArgs:  *scriptArgs,   // script args
 		})
 	}
 	return nil // unreachable
@@ -139,12 +150,14 @@ type nmapFlags struct { // small struct keeps runNmap's signature tidy
 	repo        string // repo override
 	minSeverity string // filing threshold
 	maxIssues   int    // issue cap
+	scripts     string // comma-separated NSE scripts for `nmap scan`
+	scriptArgs  string // value for nmap --script-args
 }
 
-// runNmap dispatches the parse/analyze/scan/pipeline subcommands.
+// runNmap dispatches the parse/analyze/recon/scan/pipeline subcommands.
 func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap entry point
 	if len(args) < 1 { // need a subcommand...
-		return fmt.Errorf("nmap: missing subcommand (parse|analyze|scan|pipeline)") // ...else error
+		return fmt.Errorf("nmap: missing subcommand (parse|analyze|recon|scan|pipeline)") // ...else error
 	}
 	sub := args[0]   // the subcommand name
 	rest := args[1:] // its arguments
@@ -179,14 +192,31 @@ func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap ent
 		printFindings(findings) // human mode
 		return nil
 
+	case "recon": // NSE script results only
+		if len(rest) < 1 { // need a file...
+			return fmt.Errorf("nmap recon: missing <file>")
+		}
+		sc, err := nmap.ParseFile(rest[0]) // read + parse XML
+		if err != nil {
+			return err
+		}
+		items := nmap.Recon(sc) // flatten NSE script output
+		if fl.json {            // JSON mode
+			return printJSON(items)
+		}
+		printRecon(items) // human mode
+		return nil
+
 	case "scan": // guarded live scan
 		if len(rest) < 1 {
 			return fmt.Errorf("nmap scan: missing <target>")
 		}
 		scanner := scan.New(scan.Options{ // build a scanner from config (safety gates included)
-			NmapPath:       cfg.NmapPath,       // nmap binary
-			Enable:         cfg.EnableScan,     // master switch (default false)
-			AllowedTargets: cfg.AllowedTargets, // allowlist
+			NmapPath:       cfg.NmapPath,                                // nmap binary
+			Enable:         cfg.EnableScan,                              // master switch (default false)
+			AllowedTargets: cfg.AllowedTargets,                          // allowlist
+			Scripts:        resolveScripts(fl.scripts, cfg.NmapScripts), // NSE recon scripts
+			ScriptArgs:     fl.scriptArgs,                               // optional --script-args
 		}, nil) // nil runner => real ExecRunner
 		sc, err := scanner.Scan(context.Background(), rest[0]) // guarded scan
 		if err != nil {
@@ -196,8 +226,9 @@ func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap ent
 		if fl.json {                 // JSON mode
 			return printJSON(findings)
 		}
-		printScan(sc)           // show what was found
-		printFindings(findings) // and the risk report
+		printScan(sc)              // show what was found
+		printFindings(findings)    // and the risk report
+		printRecon(nmap.Recon(sc)) // and any NSE recon output
 		return nil
 
 	case "pipeline": // full modular pipeline on an existing file
@@ -253,14 +284,38 @@ func printScan(sc *nmap.Scan) { // used by parse and scan
 				svc = fmt.Sprintf("%s (%s)", svc, banner) // ...show it in parentheses
 			}
 			fmt.Printf("    %d/%s open  %s\n", p.Number, p.Protocol, svc) // port line
+			if len(p.Scripts) > 0 {                                       // if NSE scripts ran on this port...
+				fmt.Printf("      scripts: %s\n", scriptIDs(p.Scripts)) // ...list their ids compactly
+			}
 		}
+	}
+}
+
+// scriptIDs joins script ids into a comma-separated list for display.
+func scriptIDs(scripts []nmap.Script) string { // small display helper
+	ids := make([]string, 0, len(scripts)) // collect ids in order
+	for _, s := range scripts {            // walk the scripts...
+		ids = append(ids, s.ID) // ...keeping each id
+	}
+	return strings.Join(ids, ", ") // "banner, http-title"
+}
+
+// printRecon prints the NSE script results gathered from a scan.
+func printRecon(items []nmap.ReconItem) { // used by recon and scan
+	if len(items) == 0 { // nothing gathered...
+		fmt.Println("no NSE script results") // ...say so plainly
+		return
+	}
+	fmt.Printf("%d recon item(s)\n", len(items)) // headline count
+	for _, it := range items {                   // one block per item
+		fmt.Printf("  %s\n", it.String()) // ReconItem.String() renders the detail
 	}
 }
 
 // printFindings prints a human summary of findings with a severity tally.
 func printFindings(findings []nmap.Finding) { // used by analyze and scan
 	if len(findings) == 0 { // nothing found...
-		fmt.Println("no findings") // ...say so
+		fmt.Println("no findings") // ...say so plainly
 		return
 	}
 	counts := nmap.Counts(findings)                                                                                  // tally by severity
@@ -288,11 +343,12 @@ func printJSON(v any) error { // used for scan summary and findings
 
 // portSummary is the JSON shape for an open port.
 type portSummary struct { // used only for output
-	Port     int    `json:"port"`              // port number
-	Protocol string `json:"protocol"`          // tcp/udp
-	Service  string `json:"service"`           // service name
-	Product  string `json:"product,omitempty"` // detected product
-	Version  string `json:"version,omitempty"` // detected version
+	Port     int           `json:"port"`              // port number
+	Protocol string        `json:"protocol"`          // tcp/udp
+	Service  string        `json:"service"`           // service name
+	Product  string        `json:"product,omitempty"` // detected product
+	Version  string        `json:"version,omitempty"` // detected version
+	Scripts  []nmap.Script `json:"scripts,omitempty"` // NSE script results, if any
 }
 
 // hostSummary is the JSON shape for a host.
@@ -302,6 +358,7 @@ type hostSummary struct { // used only for output
 	Hostnames []string      `json:"hostnames,omitempty"`  // reverse-DNS names
 	Status    string        `json:"status"`               // up/down
 	OpenPorts []portSummary `json:"open_ports,omitempty"` // open ports
+	Scripts   []nmap.Script `json:"scripts,omitempty"`    // host-level NSE scripts
 }
 
 // scanSummary is the JSON shape for a whole scan.
@@ -329,6 +386,7 @@ func nmapSummary(sc *nmap.Scan) scanSummary { // used by `nmap parse -json`
 			Address:   h.PrimaryAddress(), // address
 			Hostnames: h.Hostnames,        // names
 			Status:    h.Status,           // up/down
+			Scripts:   h.Scripts,          // host-level NSE scripts
 		}
 		for _, p := range h.OpenPorts() { // convert each open port
 			hs.OpenPorts = append(hs.OpenPorts, portSummary{
@@ -337,6 +395,7 @@ func nmapSummary(sc *nmap.Scan) scanSummary { // used by `nmap parse -json`
 				Service:  p.Service.Name,    // service
 				Product:  p.Service.Product, // product
 				Version:  p.Service.Version, // version
+				Scripts:  p.Scripts,         // port-level NSE scripts
 			})
 		}
 		s.Hosts = append(s.Hosts, hs) // add the host
@@ -380,6 +439,37 @@ func firstNonEmpty(vals ...string) string { // used to let flags override config
 		}
 	}
 	return "" // all blank
+}
+
+// resolveScripts decides which NSE scripts a scan should run.
+//
+// Precedence: an explicit -scripts flag wins; otherwise a configured
+// nmap_scripts value is used; otherwise the built-in safe recon profile. The
+// flag values "none"/"off" (or a configured empty list) disable scripts.
+func resolveScripts(flagValue string, configured []string) []string { // used by `nmap scan`
+	if strings.TrimSpace(flagValue) != "" { // an explicit flag always wins...
+		return parseScriptList(flagValue) // ...parsed as a comma list
+	}
+	if configured != nil { // a configured value (even empty) overrides the default...
+		return configured // ...so an empty list can disable scripts
+	}
+	return scan.ReconScripts // fall back to the built-in safe recon profile
+}
+
+// parseScriptList parses a comma-separated -scripts value.
+func parseScriptList(v string) []string { // mirrors config.parseScripts for CLI values
+	switch strings.ToLower(strings.TrimSpace(v)) { // normalize case/space
+	case "none", "off": // explicit disable...
+		return []string{} // ...a non-nil empty slice means "run no scripts"
+	default: // otherwise...
+		var out []string                             // accumulate non-empty entries
+		for _, part := range strings.Split(v, ",") { // split on commas
+			if p := strings.TrimSpace(part); p != "" { // trim and drop blanks
+				out = append(out, p) // keep real entries
+			}
+		}
+		return out // the parsed list (may be nil if the value was only commas)
+	}
 }
 
 // reorderArgs moves flags (and their values) ahead of positional arguments.

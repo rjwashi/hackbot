@@ -130,3 +130,40 @@ func TestInScopeEmptyAllowlist(t *testing.T) { // fail-closed behavior
 		t.Error("empty allowlist must allow nothing") // ...nothing is in scope
 	}
 }
+
+// TestScanBuildsScriptArgs verifies --script/--script-args are added when set.
+func TestScanBuildsScriptArgs(t *testing.T) { // recon scan args
+	fr := &fakeRunner{out: sampleXML(t)} // fake runner returns valid XML
+	s := New(Options{
+		NmapPath:       "nmap",                           // binary
+		Enable:         true,                             // enabled
+		AllowedTargets: []string{"192.168.1.0/24"},       // in scope
+		Scripts:        []string{"banner", "http-title"}, // NSE scripts
+		ScriptArgs:     "http.useragent=hackbot",         // script arguments
+	}, fr)
+	if _, err := s.Scan(context.Background(), "192.168.1.10"); err != nil { // run
+		t.Fatalf("Scan: %v", err)
+	}
+	joined := strings.Join(fr.gotArgs, " ")                      // join for substring checks
+	if !strings.Contains(joined, "--script banner,http-title") { // comma-joined script list
+		t.Errorf("missing --script arg: %v", fr.gotArgs)
+	}
+	if !strings.Contains(joined, "--script-args http.useragent=hackbot") { // script args passed through
+		t.Errorf("missing --script-args: %v", fr.gotArgs)
+	}
+	if fr.gotArgs[len(fr.gotArgs)-1] != "192.168.1.10" { // target must remain last
+		t.Errorf("target must be last arg, got %v", fr.gotArgs)
+	}
+}
+
+// TestScanWithoutScriptsOmitsFlag verifies no --script appears when unset.
+func TestScanWithoutScriptsOmitsFlag(t *testing.T) { // opt-in behavior
+	fr := &fakeRunner{out: sampleXML(t)} // fake runner
+	s := New(Options{Enable: true, AllowedTargets: []string{"192.168.1.0/24"}}, fr)
+	if _, err := s.Scan(context.Background(), "192.168.1.10"); err != nil { // run
+		t.Fatalf("Scan: %v", err)
+	}
+	if strings.Contains(strings.Join(fr.gotArgs, " "), "--script") { // must not add the flag
+		t.Errorf("did not expect --script in %v", fr.gotArgs)
+	}
+}

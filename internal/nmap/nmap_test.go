@@ -79,3 +79,63 @@ func TestPrimaryAddressPrefersIPv4(t *testing.T) { // accessor behavior
 		t.Errorf("PrimaryAddress = %q, want 10.0.0.1", h.PrimaryAddress())
 	}
 }
+
+// TestParsePortScripts verifies per-port NSE output decodes into the model.
+func TestParsePortScripts(t *testing.T) { // script parsing (fixture)
+	scan := loadSample(t)        // parse fixture
+	gw := scan.UpHosts()[0]      // gateway is the first up host
+	var p443 Port                // find port 443
+	for _, p := range gw.Ports { // scan the gateway's ports
+		if p.Number == 443 { // match the https port
+			p443 = p
+		}
+	}
+	title, ok := p443.ScriptByID("http-title") // look up a known script
+	if !ok {                                   // it must exist in the fixture
+		t.Fatal("http-title script missing on port 443")
+	}
+	if title.Output != "Example Domain" { // the output attribute is captured
+		t.Errorf("http-title output = %q", title.Output)
+	}
+	if v, ok := title.Elem("title"); !ok || v != "Example Domain" { // the <elem> child is captured
+		t.Errorf("title elem = %q ok=%v", v, ok)
+	}
+	hh, ok := p443.ScriptByID("http-headers") // a table-based script
+	if !ok {
+		t.Fatal("http-headers script missing on port 443")
+	}
+	if v, ok := hh.Elem("server"); !ok || v != "nginx/1.24.0" { // lookup inside a nested <table>
+		t.Errorf("server elem = %q ok=%v", v, ok)
+	}
+}
+
+// TestParseHostScripts verifies <hostscript> output decodes at host level.
+func TestParseHostScripts(t *testing.T) { // host-level scripts via inline XML
+	const x = `<nmaprun scanner="nmap" version="7.94"><host><status state="up"/>` + // minimal root + host
+		`<address addr="10.0.0.1" addrtype="ipv4"/>` + // one address
+		`<hostscript><script id="smb-os-discovery" output="Windows 10"><elem key="os">Windows 10</elem></script></hostscript>` + // host script
+		`</host></nmaprun>` // close root
+	scan, err := Parse(strings.NewReader(x)) // parse it
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	s, ok := scan.Hosts[0].ScriptByID("smb-os-discovery") // host-level lookup
+	if !ok {
+		t.Fatal("host script missing")
+	}
+	if s.Output != "Windows 10" { // output captured
+		t.Errorf("output = %q", s.Output)
+	}
+}
+
+// TestScriptElemNested verifies Elem searches nested tables.
+func TestScriptElemNested(t *testing.T) { // recursive lookup
+	s := Script{Tables: []ScriptTable{{ // one table...
+		Tables: []ScriptTable{{ // ...containing a nested table...
+			Elems: []ScriptElem{{Key: "deep", Value: "found"}}, // ...with the field
+		}},
+	}}}
+	if v, ok := s.Elem("deep"); !ok || v != "found" { // must find it depth-first
+		t.Errorf("Elem(deep) = %q ok=%v, want found/true", v, ok)
+	}
+}

@@ -38,6 +38,22 @@ type Options struct { // all inputs the scanner needs, injected for testability
 	ExtraArgs      []string // extra nmap flags inserted before the target
 	AllowedTargets []string // IPs/CIDRs that may be scanned (the allowlist)
 	Enable         bool     // master switch; must be true to scan at all
+	Scripts        []string // NSE scripts to run (empty = none); see ReconScripts for a safe set
+	ScriptArgs     string   // value for nmap's --script-args (e.g. "http.useragent=hackbot")
+}
+
+// ReconScripts is a conservative default set of NSE scripts for reconnaissance.
+//
+// They come from nmap's safe/version-style categories and are meant to gather
+// banners, page titles, HTTP headers, and TLS/SSH key details without disrupting
+// the target. Scanning still requires Enable=true and an in-scope target; this
+// list only decides which scripts run once a scan is permitted.
+var ReconScripts = []string{ // exposed so configs/CLIs can reuse the same profile
+	"banner",       // service banners from open ports
+	"http-title",   // page <title> for web services
+	"http-headers", // HTTP response headers (server/software hints)
+	"ssh-hostkey",  // SSH host key fingerprints (no login attempted)
+	"ssl-cert",     // TLS certificate details (subject/issuer/validity)
 }
 
 // Scanner runs guarded nmap scans.
@@ -68,7 +84,13 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*nmap.Scan, error) {
 		return nil, fmt.Errorf("target %q is not in the configured allowlist; refusing to scan", target) // refuse
 	}
 
-	args := []string{"-sV", "-oX", "-"}      // baseline nmap args: version detection + XML to stdout
+	args := []string{"-sV", "-oX", "-"} // baseline nmap args: version detection + XML to stdout
+	if len(s.opts.Scripts) > 0 {        // only add --script when the caller opted into NSE scripts...
+		args = append(args, "--script", strings.Join(s.opts.Scripts, ",")) // ...passing a comma-joined list
+	}
+	if s.opts.ScriptArgs != "" { // only add --script-args when explicitly provided...
+		args = append(args, "--script-args", s.opts.ScriptArgs) // ...so values like "http.useragent=hackbot" reach scripts
+	}
 	args = append(args, s.opts.ExtraArgs...) // insert any caller-provided extra flags next
 	args = append(args, target)              // target MUST be last so nmap treats it as the destination
 

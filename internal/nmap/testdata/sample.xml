@@ -14,10 +14,26 @@
         <service name="ssh" product="OpenSSH" version="8.9p1" extrainfo="Ubuntu Linux" method="probed" conf="10">
           <cpe>cpe:/a:openbsd:openssh:8.9p1</cpe>
         </service>
+        <script id="ssh-hostkey" output="2048 SHA256:abc123 (RSA)">
+          <table>
+            <elem key="bits">2048</elem>
+            <elem key="type">ssh-rsa</elem>
+            <elem key="fingerprint">SHA256:abc123</elem>
+          </table>
+        </script>
       </port>
       <port protocol="tcp" portid="443">
         <state state="open" reason="syn-ack"/>
         <service name="https" product="nginx" version="1.24.0" method="probed" conf="10"/>
+        <script id="http-title" output="Example Domain">
+          <elem key="title">Example Domain</elem>
+        </script>
+        <script id="http-headers" output="HTTP/1.1 200 OK">
+          <table key="response">
+            <elem key="status">HTTP/1.1 200 OK</elem>
+            <elem key="server">nginx/1.24.0</elem>
+          </table>
+        </script>
       </port>
       <port protocol="tcp" portid="3306">
         <state state="open" reason="syn-ack"/>
@@ -40,6 +56,9 @@
       <port protocol="tcp" portid="6379">
         <state state="open" reason="syn-ack"/>
         <service name="redis" product="Redis" version="7.0.12" method="probed" conf="10"/>
+        <script id="redis-info" output="redis_version:7.0.12">
+          <elem key="redis_version">7.0.12</elem>
+        </script>
       </port>
     </ports>
   </host>

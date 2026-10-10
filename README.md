@@ -60,7 +60,10 @@ hackbot nmap parse   scan.xml
 # Rule-based risk report (flags risky exposed services)
 hackbot nmap analyze scan.xml
 
-# GUARDED scan of an allowlisted target, then analyze
+# NSE script (recon) output: banners, page titles, headers, keys
+hackbot nmap recon   scan.xml
+
+# GUARDED scan of an allowlisted target, then analyze + recon
 hackbot nmap scan    192.168.1.10
 
 # Full pipeline (flags work anywhere on the line)
@@ -81,6 +84,30 @@ nmap -sV -oX scan.xml 192.168.1.0/24
 `internal/nmap` flags commonly-sensitive exposed services (Docker API, Redis,
 MongoDB, SMB, RDP, databases, …) with a severity, and lists other open ports as
 `INFO`. It is conservative: it reports *exposure*, not a confirmed vulnerability.
+
+### NSE recon
+
+hackbot parses Nmap Scripting Engine (NSE) output from XML and can run a safe
+recon profile during guarded scans. Ingestion works on any XML containing
+`<script>` output (per-port or host-level `<hostscript>`):
+
+```bash
+hackbot nmap recon scan.xml          # list script results
+hackbot nmap recon scan.xml -json    # machine-readable
+```
+
+When scanning, a conservative default profile runs
+(`banner`, `http-title`, `http-headers`, `ssh-hostkey`, `ssl-cert`). Override it
+with `-scripts`, or disable it with `-scripts none`:
+
+```bash
+hackbot nmap scan 192.168.1.10 -scripts safe,default   # nmap categories work too
+hackbot nmap scan 192.168.1.10 -scripts none           # ports/services only
+hackbot nmap scan 192.168.1.10 -script-args http.useragent=hackbot
+```
+
+NSE output is also folded into the pipeline report (`nmap pipeline`) and the LLM
+prompt.
 
 ### LLM stage
 
@@ -131,6 +158,7 @@ env-var overrides:
 | `enable_scan` | `HACKBOT_ENABLE_SCAN` | `false` | master scan switch |
 | `allowed_targets` | `HACKBOT_ALLOWED_TARGETS` | _(empty)_ | comma-separated IPs/CIDRs |
 | `nmap_path` | `HACKBOT_NMAP_PATH` | `nmap` | nmap binary |
+| `nmap_scripts` | `HACKBOT_NMAP_SCRIPTS` | _(safe recon set)_ | comma-separated NSE scripts; `none` disables |
 | `llm_base_url` | `HACKBOT_LLM_BASE_URL` | _(empty)_ | OpenAI-compatible base URL |
 | `llm_api_key` | `HACKBOT_LLM_API_KEY` | _(empty)_ | LLM auth token |
 | `llm_model` | `HACKBOT_LLM_MODEL` | _(empty)_ | model ID |

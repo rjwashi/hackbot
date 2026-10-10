@@ -89,3 +89,23 @@ func TestEnvOverrideInvalid(t *testing.T) { // error path
 		t.Fatal("expected error for invalid interval env var, got nil")
 	}
 }
+
+// TestNmapScriptsEnv verifies the script env override and the "none" opt-out.
+func TestNmapScriptsEnv(t *testing.T) { // script selection env
+	t.Setenv("HACKBOT_NMAP_SCRIPTS", "banner, http-title,,https") // list with blanks
+	cfg, err := Load("")                                          // load with no file
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.NmapScripts) != 3 || cfg.NmapScripts[0] != "banner" || cfg.NmapScripts[2] != "https" { // blanks dropped
+		t.Errorf("NmapScripts = %v, want [banner http-title https]", cfg.NmapScripts)
+	}
+	t.Setenv("HACKBOT_NMAP_SCRIPTS", "none") // explicit opt-out
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NmapScripts == nil || len(cfg.NmapScripts) != 0 { // must be non-nil and empty
+		t.Errorf("NmapScripts = %v, want non-nil empty", cfg.NmapScripts)
+	}
+}

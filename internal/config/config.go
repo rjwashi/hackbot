@@ -31,6 +31,10 @@ type Config struct { // one struct with JSON tags; env overrides applied after l
 	AllowedTargets []string `json:"allowed_targets"` // scanned only if a target falls inside one of these
 	// NmapPath is the nmap binary. Overridable via HACKBOT_NMAP_PATH.
 	NmapPath string `json:"nmap_path"` // default "nmap"
+	// NmapScripts lists NSE scripts to run when scanning. Nil means "use the
+	// caller's default recon profile"; a non-nil empty list means "no scripts".
+	// Overridable via HACKBOT_NMAP_SCRIPTS (comma-separated; "none" disables).
+	NmapScripts []string `json:"nmap_scripts"` // e.g. ["banner","http-title"]
 
 	// ---- agent pipeline ----
 
@@ -93,6 +97,9 @@ func Load(path string) (Config, error) { // main constructor
 	if v := os.Getenv("HACKBOT_NMAP_PATH"); v != "" { // env override for the nmap binary
 		cfg.NmapPath = v
 	}
+	if v := os.Getenv("HACKBOT_NMAP_SCRIPTS"); v != "" { // env override for the NSE script list
+		cfg.NmapScripts = parseScripts(v) // comma list, or "none"/"off" to disable
+	}
 	if v := os.Getenv("HACKBOT_LLM_BASE_URL"); v != "" { // env override for LLM base URL
 		cfg.LLMBaseURL = v
 	}
@@ -139,4 +146,16 @@ func splitList(v string) []string { // used for HACKBOT_ALLOWED_TARGETS
 		}
 	}
 	return out // nil if nothing valid was provided
+}
+
+// parseScripts parses HACKBOT_NMAP_SCRIPTS. The values "none" or "off" select no
+// scripts (returning an empty, non-nil slice so callers can tell that apart from
+// an unset value); anything else is a comma-separated script list.
+func parseScripts(v string) []string { // tolerant env parsing for script selection
+	switch strings.ToLower(strings.TrimSpace(v)) { // normalize case/space
+	case "none", "off": // explicit opt-out...
+		return []string{} // ...a non-nil empty slice means "configured to run none"
+	default: // otherwise...
+		return splitList(v) // ...treat it as a comma-separated list
+	}
 }

@@ -75,3 +75,23 @@ func TestFirstNonEmpty(t *testing.T) { // small utility
 		t.Errorf("firstNonEmpty = %q, want empty", got)
 	}
 }
+
+// TestResolveScripts verifies flag > config > default precedence.
+func TestResolveScripts(t *testing.T) { // script resolution
+	if got := resolveScripts("banner,http-title", []string{"ignored"}); len(got) != 2 || got[1] != "http-title" { // flag wins
+		t.Errorf("flag precedence: %v", got)
+	}
+	if got := resolveScripts("", []string{}); got == nil || len(got) != 0 { // empty config overrides the default
+		t.Errorf("empty config should disable scripts, got %v", got)
+	}
+	got := resolveScripts("", nil) // nothing configured -> built-in profile
+	if len(got) == 0 || got[0] != "banner" {
+		t.Errorf("default profile = %v", got)
+	}
+	if got := resolveScripts("none", nil); got == nil || len(got) != 0 { // flag none disables
+		t.Errorf("flag none = %v, want non-nil empty", got)
+	}
+	if got := parseScriptList("a, b ,, c"); len(got) != 3 || got[2] != "c" { // comma parsing drops blanks
+		t.Errorf("parseScriptList = %v", got)
+	}
+}
