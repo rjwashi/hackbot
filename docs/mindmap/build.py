@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the hackbot concept maps (v3-overview.cxl + v3-overview.txt).
+"""Regenerate the hackbot concept maps (v4-overview.cxl + v4-overview.txt).
 
 WHY a generator at all: a CmapTools .cxl file and its plain-text mirror must say
 the same thing, and hand-keeping two encodings of ~60 concepts in sync is exactly
@@ -39,9 +39,11 @@ CONCEPTS: list[tuple[str, str, str]] = [
         "Root concept. hackbot is a Go-first security toolkit with a small Python "
         "escape hatch. It wraps free/open-source tools behind one CLI, treats each "
         "capability as an 'agent', and forces every active action through a two-gate "
-        "safety model (enable + allowlist). This is map v3: it reflects the seven "
-        "shipped agent families (nmap, cve, web/WSTG, recon, discover, secrets, deps), "
-        "the recon footprint chain, and the shared engine that backs the last five.",
+        "safety model (enable + allowlist). This is map v4: it reflects the eight "
+        "shipped agent families (nmap, cve, web/WSTG, recon, discover, secrets, deps, "
+        "skill), the recon footprint chain, and the two engines that back them — the "
+        "shared task engine (internal/ops) and the rubric-driven skill evaluator "
+        "(internal/skillsec).",
     ),
     # ----- IDENTITY -------------------------------------------------------
     (
@@ -164,6 +166,17 @@ CONCEPTS: list[tuple[str, str, str]] = [
         "local; the database updates make outbound requests.",
     ),
     (
+        "fam_skill",
+        "skill family (list, show, rules, plan, run)",
+        "Evaluates a downloaded AI-agent skill directory against security rubrics "
+        "parsed from src/agent_files/ (malicious-skills 1.1-1.6, over-privileged-skills "
+        "3.1-3.8, insecure-metadata 4.1-4.12 = 26 checks). Probes execute real "
+        "commands (rg/grep/git/semgrep/gitleaks plus an in-process scanner for "
+        "Go-only patterns like zero-width/control-char/base64 smuggling) and return "
+        "verdicts with line-numbered evidence. Also path-kind: gated by allowed_paths "
+        "and dry-run by default.",
+    ),
+    (
         "fam_chain",
         "chains (footprint: subdomains → live HTTP)",
         "A chain composes tasks by piping one step's stdout into the next step's stdin "
@@ -242,6 +255,15 @@ CONCEPTS: list[tuple[str, str, str]] = [
         "Mirrors secrets: a path-kind catalog for a local project, gated by "
         "allowed_paths, with vulns/sbom/grype/osv tasks.",
     ),
+    (
+        "cli_skill",
+        "skill list · show · rules · plan · run",
+        "'list/show' are pure reference (the rubric catalog and one rubric's checks); "
+        "'rules' prints the probe catalog (free tools + a command per check); 'plan' "
+        "maps every check to a probe or manual guidance; 'run' is the guarded "
+        "evaluator (dry-run by default). A bare '<rubric>' forwards to 'show', like "
+        "'web <category>' does.",
+    ),
     # ----- CODE MAP -------------------------------------------------------
     (
         "code",
@@ -258,6 +280,7 @@ CONCEPTS: list[tuple[str, str, str]] = [
     ("pkg_vulscan", "vulscan/", "Parses vulscan (VulDB) NSE output into potential CVE matches; conservative on purpose (offline data, unconfirmed)."),
     ("pkg_wstg", "wstg/ (+ capability.go, run.go)", "Parses/embeds the WSTG checklists, holds the free-tool catalog and curated checks, and runs them under guard."),
     ("pkg_ops", "ops/ (+ runner.go, recon.go, discovery.go, secrets.go, deps.go)", "The general capability engine: Tool/Task/Catalog + a guarded Runner + Chains. recon, discover, secrets, and deps are just catalogs on top; the Kind (host vs path) chooses which allowlist applies, and CheckScope is the one shared gate."),
+    ("pkg_skillsec", "skillsec/ (skillsec.go, rules.go, run.go)", "Parses the skill-security rubrics from src/agent_files/ (auto-detects the WSTG-style table format and skips the WSTG files in the same directory), holds the probe catalog (search/exec/manual probes over a free tool catalog), and runs them under the same ops.CheckScope gate with dry-run as the default. Search probes use rg → grep → an in-process Go scanner, so a bare machine still gets a real answer."),
     # ----- DATA FLOW ------------------------------------------------------
     ("dataflow", "DATA FLOW", "How data becomes findings. '→' marks transformation; [ ] marks optional stages."),
     ("flow_nmap", "nmap XML (or guarded scan) → parse → analyze → []Finding", "Either you produce the XML yourself, or hackbot runs a guarded scan; both funnel into the same parser so downstream stages don't care about the source."),
@@ -268,11 +291,12 @@ CONCEPTS: list[tuple[str, str, str]] = [
     ("flow_chain", "task stdout —(OS pipe, no shell)→ next task stdin", "The chain layer (ops.RunChain + scan.StdinRunner) connects steps with a real pipe, so target-derived data never becomes a shell fragment. Stops at the first failing step."),
     ("flow_secrets", "local path → secret task → gitleaks/trufflehog findings", "Reads files only (verify may contact the issuing service). Output is raw tool evidence, not a verdict, so the operator triages."),
     ("flow_deps", "local project → SCA/SBOM task → CVEs or CycloneDX", "trivy/grype/osv-scanner emit ranked vulnerabilities; syft emits an SBOM. The databases are downloaded, so only the scanned files are local."),
+    ("flow_skill", "skill directory → rubric check → probes → verdict + evidence", "Each rubric check maps to one or more probes: search probes grep the skill's files, exec probes run tools (git/semgrep/gitleaks), manual probes stay human guidance. Verdicts aggregate with FAIL > ERROR > REVIEW > MANUAL > PASS > SKIP precedence and carry line-numbered evidence, plus a note listing which tools were missing so the operator knows what did not run."),
     # ----- SAFETY ---------------------------------------------------------
     ("safety", "SAFETY MODEL", "The rules that make a dual-use tool safe to ship. Every family must obey all of them."),
     ("safe_off", "execution is DISABLED by default (enable_scan)", "Nothing runs (network or local) until enable_scan / HACKBOT_ENABLE_SCAN is set. Alternative rejected: 'read-only is always safe' is false once a tool can clone remote repos."),
     ("safe_allowlist", "an allowlist is REQUIRED (allowed_targets IP/CIDR; allowed_domains names; allowed_paths local dirs)", "A target must be inside the relevant allowlist before a real run, chosen by the catalog's Kind: host catalogs use allowed_targets/allowed_domains, path catalogs (secrets/deps) use allowed_paths. IPs and domains are separate lists because allowing a CIDR is not consent to hit every domain that resolves into it, and an allowed path root does not admit a sibling with a shared name prefix."),
-    ("safe_dry", "actions are DRY-RUN by default (web run, recon, discover, secrets, deps, issues)", "The default is to render the exact command and run nothing. You opt in with -dry-run=false. This makes the safe path also the informative path."),
+    ("safe_dry", "actions are DRY-RUN by default (web run, recon, discover, secrets, deps, skill run, issues)", "The default is to render the exact command and run nothing. You opt in with -dry-run=false. This makes the safe path also the informative path."),
     ("safe_ingest", "ingestion is the default mode", "parse/analyze/recon/vulscan/pipeline and all web/plan commands read data and never scan, so the tool is useful with zero scanning enabled."),
     ("safe_templates", "fixed argument templates (targets are never shell-interpolated)", "Commands are stored as argv arrays with placeholders; the target becomes one argv element, never a shell fragment. This removes an entire class of injection bugs."),
     ("safe_runner", "the runner is the authoritative gate (ops.CheckScope)", "The CLI pre-checks for a friendly message, but the runner re-checks enable + scope itself via one shared gate, so a new caller cannot bypass the guards by forgetting them."),
@@ -293,11 +317,12 @@ CONCEPTS: list[tuple[str, str, str]] = [
     ("rm_chain2", "[ ] recon → discover chaining", "Feed recon http/live-host output into discovery so one allowlisted seed expands into a full footprint, beyond the shipped subdomains→httpx chain."),
     ("rm_skills", "[ ] generate OpenCode skills from agents", "Each registry entry is already skill-shaped; 'hackbot agents -format skill' scaffolds them."),
     ("rm_enrich", "[ ] vulscan → NVD enrichment; EPSS/KEV; SARIF/CycloneDX", "Attach CVSS/EPSS/KEV to vulscan CVEs, rank by exploitation likelihood, and export CI-friendly formats."),
+    ("rm_rubrics", "[ ] evaluate published skill corpora (quarantined/malicious samples)", "Run the full trio of rubrics over known-good and known-malicious skill samples (e.g. quarantined ClawHub-style bundles) and publish a sample report so the skill evaluator's verdicts are demonstrably calibrated."),
     # ----- META -----------------------------------------------------------
     ("meta", "MIND MAP META", "How to read and maintain this map."),
     ("meta_cxl", "CXL (CmapTools) is the map of record; .txt mirrors it", "Edges are propositions: concept -> linking phrase -> concept. Open the .cxl in CmapTools (File -> Open)."),
     ("meta_comments", "long-comments explain the 'why' and the rejected alternatives", "Most concepts carry a long-comment explaining the reasoning, not just the label, so the map teaches the design."),
-    ("meta_versions", "one version per milestone; older versions stay for history", "v1 captured the nmap milestone; v2 the five-family project; v3 adds the secrets and deps families plus the recon footprint chain. A future final-annotated pass can expand every concept for a newcomer."),
+    ("meta_versions", "one version per milestone; older versions stay for history", "v1 captured the nmap milestone; v2 the five-family project; v3 adds secrets + deps and the footprint chain; v4 adds the skill-security rubric family. A future final-annotated pass can expand every concept for a newcomer."),
 ]
 
 # Edges form a TREE rooted at 'root' so the .txt outline is a faithful mirror of
@@ -321,6 +346,7 @@ EDGES: list[tuple[str, str, str]] = [
     ("families", "includes", "fam_discover"),
     ("families", "includes", "fam_secrets"),
     ("families", "includes", "fam_deps"),
+    ("families", "includes", "fam_skill"),
     ("families", "includes", "fam_chain"),
     ("families", "will grow via", "fam_cloud"),
 
@@ -334,6 +360,7 @@ EDGES: list[tuple[str, str, str]] = [
     ("cli", "includes", "cli_discover"),
     ("cli", "includes", "cli_secrets"),
     ("cli", "includes", "cli_deps"),
+    ("cli", "includes", "cli_skill"),
 
     ("root", "is implemented by", "code"),
     ("code", "contains", "pkg_config"),
@@ -345,6 +372,7 @@ EDGES: list[tuple[str, str, str]] = [
     ("code", "contains", "pkg_vulscan"),
     ("code", "contains", "pkg_wstg"),
     ("code", "contains", "pkg_ops"),
+    ("code", "contains", "pkg_skillsec"),
 
     ("root", "processes", "dataflow"),
     ("dataflow", "starts from", "flow_nmap"),
@@ -355,6 +383,7 @@ EDGES: list[tuple[str, str, str]] = [
     ("dataflow", "includes", "flow_chain"),
     ("dataflow", "includes", "flow_secrets"),
     ("dataflow", "includes", "flow_deps"),
+    ("dataflow", "includes", "flow_skill"),
 
     ("root", "is constrained by", "safety"),
     ("safety", "defaults to", "safe_off"),
@@ -380,6 +409,7 @@ EDGES: list[tuple[str, str, str]] = [
     ("roadmap", "includes", "rm_chain2"),
     ("roadmap", "includes", "rm_skills"),
     ("roadmap", "includes", "rm_enrich"),
+    ("roadmap", "includes", "rm_rubrics"),
 
     ("root", "is documented by", "meta"),
     ("meta", "uses", "meta_cxl"),
@@ -388,9 +418,9 @@ EDGES: list[tuple[str, str, str]] = [
 ]
 
 ROOT = "root"
-TITLE = "hackbot — mind map v3 (overview, annotated)"
+TITLE = "hackbot — mind map v4 (overview, annotated)"
 DESCRIPTION = "What hackbot is, what it does, and why it is built this way?"
-SUBJECT = "hackbot, Go, security agents, WSTG, recon, secrets, SBOM, chains, concept map, v3"
+SUBJECT = "hackbot, Go, security agents, WSTG, recon, secrets, SBOM, skill security, rubric evaluation, chains, concept map, v4"
 
 
 def esc(text: str) -> str:
@@ -436,7 +466,7 @@ def build() -> tuple[str, str]:
     lines: list[str] = []
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
     lines.append("<!--")
-    lines.append("  hackbot — concept map v3 (overview, annotated)")
+    lines.append("  hackbot — concept map v4 (overview, annotated)")
     lines.append("  Format: CXL (Concept Map Extensible Language), IHMC CmapTools.")
     lines.append("  Open with CmapTools (https://cmap.ihmc.us/) via File -> Open.")
     lines.append("  Every edge reads as a proposition: concept -> linking phrase -> concept.")
@@ -501,7 +531,7 @@ def build() -> tuple[str, str]:
     # ---- TXT outline (tree walk; each node printed once) ----
     label_of = {key: label for key, label, _ in CONCEPTS}  # key -> display label
     phrase_of = {(parent, child): phrase for parent, phrase, child in EDGES}  # edge -> label
-    txt: list[str] = [f'{CONCEPTS[0][1]}  (mind map v3 — overview, annotated)', ""]
+    txt: list[str] = [f'{CONCEPTS[0][1]}  (mind map v4 — overview, annotated)', ""]
     visited = {ROOT}
 
     def walk(node: str, prefix: str) -> None:
@@ -523,9 +553,9 @@ def build() -> tuple[str, str]:
 def main() -> None:
     here = Path(__file__).resolve().parent
     cxl, txt = build()
-    (here / "v3-overview.cxl").write_text(cxl, encoding="utf-8", newline="\n")
-    (here / "v3-overview.txt").write_text(txt, encoding="utf-8", newline="\n")
-    print("wrote v3-overview.cxl and v3-overview.txt")
+    (here / "v4-overview.cxl").write_text(cxl, encoding="utf-8", newline="\n")
+    (here / "v4-overview.txt").write_text(txt, encoding="utf-8", newline="\n")
+    print("wrote v4-overview.cxl and v4-overview.txt")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ project grows, so each meaningful milestone gets its own version.
   repo or a terminal. Keep it in sync with the `.cxl`.
 
 Node `long-comment`s (CmapTools concept comments) are used to explain concepts
-to someone who does not know hackbot yet. In `v3` almost every concept carries a
+to someone who does not know hackbot yet. In `v4` almost every concept carries a
 long-comment explaining *why* the design is the way it is and which alternatives
 were rejected — open the map in CmapTools and hover/click a concept to read it.
 
@@ -23,7 +23,8 @@ were rejected — open the map in CmapTools and hover/click a concept to read it
 |-----------------|-----------|-------|--------|
 | `v1-overview.cxl` | `v1-overview.txt` | Project shape at the nmap-agent milestone | archived |
 | `v2-overview.cxl` | `v2-overview.txt` | Five agent families + shared engine | archived |
-| `v3-overview.cxl` | `v3-overview.txt` | Seven families (adds secrets + deps) and the recon footprint chain | current |
+| `v3-overview.cxl` | `v3-overview.txt` | Seven families (adds secrets + deps) and the recon footprint chain | archived |
+| `v4-overview.cxl` | `v4-overview.txt` | Eight families (adds the skill-security rubric family) | current |
 | `final-annotated.cxl` | — | Every concept explained for a newcomer | planned |
 
 ## How to read a map
@@ -34,8 +35,8 @@ were rejected — open the map in CmapTools and hover/click a concept to read it
 
 ## Keeping it current
 
-`v3` is generated: `build.py` holds the whole map as one structure
-(`CONCEPTS` + `EDGES`) and emits both `v3-overview.cxl` and `v3-overview.txt`
+`v4` is generated: `build.py` holds the whole map as one structure
+(`CONCEPTS` + `EDGES`) and emits both `v4-overview.cxl` and `v4-overview.txt`
 from it, so the two encodings cannot drift (the same reason the repo has Go
 drift-tests for its docs). Regenerate with:
 

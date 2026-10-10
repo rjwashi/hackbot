@@ -32,6 +32,8 @@ hackbot/docs/mindmap/v2-overview.cxl
 hackbot/docs/mindmap/v2-overview.txt
 hackbot/docs/mindmap/v3-overview.cxl
 hackbot/docs/mindmap/v3-overview.txt
+hackbot/docs/mindmap/v4-overview.cxl
+hackbot/docs/mindmap/v4-overview.txt
 hackbot/go.mod
 hackbot/hackbot.example.json
 hackbot/internal/
