@@ -70,6 +70,20 @@ hackbot/pythontools/README.md
 hackbot/pythontools/helpers.py
 hackbot/pythontools/requirements.txt
 hackbot/pythontools/test_helpers.py
+hackbot/src/
+hackbot/src/agent_files/
+hackbot/src/agent_files/ApiTesting.md
+hackbot/src/agent_files/Authentication.md
+hackbot/src/agent_files/Authorization.md
+hackbot/src/agent_files/BusinessLogic.md
+hackbot/src/agent_files/ClientSide.md
+hackbot/src/agent_files/ConfigManagement.md
+hackbot/src/agent_files/ErrorHandling.md
+hackbot/src/agent_files/IdentityManagement.md
+hackbot/src/agent_files/InformationGathering.md
+hackbot/src/agent_files/Injection.md
+hackbot/src/agent_files/SessionManagement.md
+hackbot/src/agent_files/WeakCryptography.md
 ```
 <!-- END LAYOUT -->
 
