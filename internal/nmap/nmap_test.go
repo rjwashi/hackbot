@@ -1,75 +1,81 @@
-package nmap
+package nmap // same package as nmap.go
 
-import (
-	"path/filepath"
-	"strings"
-	"testing"
+import ( // test imports
+	"path/filepath" // build the testdata path portably
+	"strings"       // strings.NewReader for in-memory XML inputs
+	"testing"       // the testing framework
 )
 
-func loadSample(t *testing.T) *Scan {
-	t.Helper()
-	scan, err := ParseFile(filepath.Join("testdata", "sample.xml"))
-	if err != nil {
-		t.Fatalf("ParseFile: %v", err)
+// loadSample parses the shared fixture, failing the test on error.
+func loadSample(t *testing.T) *Scan { // shared fixture loader
+	t.Helper()                                                      // mark as helper
+	scan, err := ParseFile(filepath.Join("testdata", "sample.xml")) // parse the fixture
+	if err != nil {                                                 // a broken fixture should fail loudly...
+		t.Fatalf("ParseFile: %v", err) // ...here, not in every test
 	}
-	return scan
+	return scan // return the parsed scan
 }
 
-func TestParseSample(t *testing.T) {
-	scan := loadSample(t)
-	if scan.Version != "7.94" {
-		t.Errorf("Version = %q, want 7.94", scan.Version)
+// TestParseSample verifies the fixture decodes with the expected shape.
+func TestParseSample(t *testing.T) { // main parse test
+	scan := loadSample(t)       // parse fixture
+	if scan.Version != "7.94" { // nmap version attribute...
+		t.Errorf("Version = %q, want 7.94", scan.Version) // ...should be captured
 	}
-	if len(scan.Hosts) != 3 {
+	if len(scan.Hosts) != 3 { // fixture has 3 hosts
 		t.Fatalf("len(Hosts) = %d, want 3", len(scan.Hosts))
 	}
 
-	up := scan.UpHosts()
-	if len(up) != 2 {
+	up := scan.UpHosts() // filter to up hosts
+	if len(up) != 2 {    // fixture has 2 up, 1 down
 		t.Fatalf("len(UpHosts) = %d, want 2", len(up))
 	}
 
-	gw := up[0]
-	if gw.Label() != "gateway.local (192.168.1.10)" {
+	gw := up[0]                                       // first up host is the gateway
+	if gw.Label() != "gateway.local (192.168.1.10)" { // label combines name + address
 		t.Errorf("Label = %q", gw.Label())
 	}
-	if got := len(gw.OpenPorts()); got != 3 {
+	if got := len(gw.OpenPorts()); got != 3 { // gateway has 3 open ports
 		t.Errorf("gateway open ports = %d, want 3", got)
 	}
-	for _, p := range gw.Ports {
-		if p.Number == 443 && p.Service.Product != "nginx" {
+	for _, p := range gw.Ports { // find the https port...
+		if p.Number == 443 && p.Service.Product != "nginx" { // ...and check its product
 			t.Errorf("port 443 product = %q, want nginx", p.Service.Product)
 		}
 	}
-	if gw.Ports[0].Number != 22 {
+	if gw.Ports[0].Number != 22 { // ports should be sorted ascending
 		t.Errorf("ports not sorted; first = %d", gw.Ports[0].Number)
 	}
 }
 
-func TestParseRejectsNonNmapXML(t *testing.T) {
-	if _, err := Parse(strings.NewReader("<notnmap/>")); err == nil {
-		t.Fatal("expected error for non-nmap root element")
+// TestParseRejectsNonNmapXML verifies the root-element guard.
+func TestParseRejectsNonNmapXML(t *testing.T) { // validation
+	if _, err := Parse(strings.NewReader("<notnmap/>")); err == nil { // wrong root...
+		t.Fatal("expected error for non-nmap root element") // ...must error
 	}
 }
 
-func TestParseRejectsGarbage(t *testing.T) {
-	if _, err := Parse(strings.NewReader("this is not xml")); err == nil {
-		t.Fatal("expected error for non-XML input")
+// TestParseRejectsGarbage verifies non-XML input errors.
+func TestParseRejectsGarbage(t *testing.T) { // validation
+	if _, err := Parse(strings.NewReader("this is not xml")); err == nil { // invalid XML...
+		t.Fatal("expected error for non-XML input") // ...must error
 	}
 }
 
-func TestParseFileMissing(t *testing.T) {
-	if _, err := ParseFile(filepath.Join("testdata", "nope.xml")); err == nil {
-		t.Fatal("expected error for missing file")
+// TestParseFileMissing verifies a missing file errors.
+func TestParseFileMissing(t *testing.T) { // error path
+	if _, err := ParseFile(filepath.Join("testdata", "nope.xml")); err == nil { // nonexistent file...
+		t.Fatal("expected error for missing file") // ...must error
 	}
 }
 
-func TestPrimaryAddressPrefersIPv4(t *testing.T) {
-	h := Host{Addresses: []Address{
-		{Addr: "fe80::1", Type: "ipv6"},
-		{Addr: "10.0.0.1", Type: "ipv4"},
+// TestPrimaryAddressPrefersIPv4 verifies IPv4 selection over IPv6.
+func TestPrimaryAddressPrefersIPv4(t *testing.T) { // accessor behavior
+	h := Host{Addresses: []Address{ // host with both address families
+		{Addr: "fe80::1", Type: "ipv6"},  // IPv6 first...
+		{Addr: "10.0.0.1", Type: "ipv4"}, // ...IPv4 second
 	}}
-	if h.PrimaryAddress() != "10.0.0.1" {
+	if h.PrimaryAddress() != "10.0.0.1" { // IPv4 must win despite order
 		t.Errorf("PrimaryAddress = %q, want 10.0.0.1", h.PrimaryAddress())
 	}
 }
