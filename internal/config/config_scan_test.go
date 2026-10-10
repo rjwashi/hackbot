@@ -50,6 +50,35 @@ func TestAllowedTargetsEnv(t *testing.T) { // allowlist parsing
 	}
 }
 
+// TestAllowedPathsEnv verifies the local path allowlist parses the same way,
+// and that its JSON key decodes, so secrets/deps gating is configurable.
+func TestAllowedPathsEnv(t *testing.T) { // path allowlist parsing + JSON
+	t.Setenv("HACKBOT_ALLOWED_PATHS", "/srv/app, ./work ,") // spaces and a trailing comma
+	cfg, err := Load("")                                    // load with the env override
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"/srv/app", "./work"}  // expected trimmed, non-empty entries
+	if len(cfg.AllowedPaths) != len(want) { // count must match
+		t.Fatalf("AllowedPaths = %v, want %v", cfg.AllowedPaths, want)
+	}
+	for i := range want { // order/value must match
+		if cfg.AllowedPaths[i] != want[i] {
+			t.Errorf("AllowedPaths[%d] = %q, want %q", i, cfg.AllowedPaths[i], want[i])
+		}
+	}
+
+	p := writeTemp(t, `{"allowed_paths":["/srv/app","/srv/data"]}`) // JSON form of the same key
+	t.Setenv("HACKBOT_ALLOWED_PATHS", "")                           // clear the env override so the file value wins
+	cfg, err = Load(p)                                              // load the file
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AllowedPaths) != 2 || cfg.AllowedPaths[1] != "/srv/data" { // both entries decoded
+		t.Errorf("json allowed_paths = %v", cfg.AllowedPaths)
+	}
+}
+
 // TestLLMAndRepoEnv verifies the agent-related env overrides.
 func TestLLMAndRepoEnv(t *testing.T) { // env overrides
 	t.Setenv("HACKBOT_LLM_BASE_URL", "https://example.test/v1") // LLM base URL

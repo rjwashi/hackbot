@@ -80,3 +80,45 @@ func TestTargetInScope(t *testing.T) { // used by the recon/discovery agents
 		t.Error("empty allowlists should deny everything")
 	}
 }
+
+// TestPathInScope verifies the local-path allowlist used by secrets/deps.
+func TestPathInScope(t *testing.T) { // path containment semantics
+	roots := []string{"/srv/app"} // one allowed root
+
+	inScope := []string{ // these must be contained by the root
+		"/srv/app",        // the root itself
+		"/srv/app/",       // trailing slash
+		"/srv/app/sub",    // a child directory
+		"/srv/app/a/b/c",  // a deep child
+		"/srv/app/../app", // cleaned back inside the root
+	}
+	for _, p := range inScope { // every candidate...
+		if !PathInScope(p, roots) { // ...must be in scope
+			t.Errorf("PathInScope(%q) = false, want true", p)
+		}
+	}
+
+	outScope := []string{ // these must be refused
+		"/srv/app-evil",   // prefix trap: sibling with a shared name prefix
+		"/srv/app/../etc", // escapes upward
+		"/etc",            // entirely outside
+		"/srv",            // a parent of the root
+		"",                // empty
+	}
+	for _, p := range outScope { // every candidate...
+		if PathInScope(p, roots) { // ...must be refused
+			t.Errorf("PathInScope(%q) = true, want false", p)
+		}
+	}
+}
+
+// TestPathInScopeEmptyRootsUsesCwd verifies the documented default: with no
+// configured roots, the current working directory is the sole allowed root.
+func TestPathInScopeEmptyRootsUsesCwd(t *testing.T) { // default-root behavior
+	if !PathInScope(".", nil) { // the cwd (as ".") is in scope
+		t.Error("PathInScope(\".\", nil) should be true (cwd default)")
+	}
+	if PathInScope(t.TempDir(), nil) { // an unrelated temp dir is not
+		t.Error("an unrelated directory should be out of scope when roots is empty")
+	}
+}

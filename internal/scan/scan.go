@@ -6,6 +6,7 @@
 package scan // importable as "scan"
 
 import ( // this file's imports
+	"bytes"   // bytes.NewReader to feed piped stdin to a child process
 	"context" // lets callers cancel a long-running scan
 	"errors"  // errors.New for the sentinel ErrDisabled
 	"fmt"     // Errorf for wrapping/contextual errors
@@ -30,6 +31,23 @@ type ExecRunner struct{} // stateless; satisfies CommandRunner
 // Run executes name with args and returns combined output.
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) { // real implementation
 	return exec.CommandContext(ctx, name, args...).CombinedOutput() // CombinedOutput merges stdout+stderr for diagnostics
+}
+
+// StdinRunner is an optional capability of a CommandRunner: it runs a process
+// with data piped to its standard input. It exists for CHAINING one tool's output
+// into the next (the recon "footprint" chain: subfinder lists subdomains, httpx
+// probes that list). We model it as a separate interface rather than widening
+// CommandRunner so existing fakes keep compiling and a runner that cannot pipe
+// simply doesn't satisfy it.
+type StdinRunner interface { // implemented by ExecRunner; opt-in for fakes
+	RunStdin(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error)
+}
+
+// RunStdin runs name with args and feeds stdin to the child's standard input.
+func (ExecRunner) RunStdin(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) { // real implementation
+	cmd := exec.CommandContext(ctx, name, args...) // build the command
+	cmd.Stdin = bytes.NewReader(stdin)             // feed the piped input (no shell, no temp file)
+	return cmd.CombinedOutput()                    // merge stdout+stderr
 }
 
 // Options configures a Scanner.

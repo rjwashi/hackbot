@@ -14,6 +14,7 @@
 package ops // importable as "ops"
 
 import ( // imports for this file
+	"fmt"     // Errorf for scope-refusal messages
 	"sort"    // deterministic tool/task ordering
 	"strings" // command rendering
 
@@ -25,6 +26,16 @@ import ( // imports for this file
 // SecLists "common.txt"; using a well-known default keeps the dry-run output
 // meaningful even before an operator picks a list.
 const DefaultWordlist = "/usr/share/seclists/Discovery/Web-Content/common.txt" // free (SecLists)
+
+// Target kinds tell the engine which allowlist (and which placeholder math) a
+// catalog uses. Most catalogs are host-based (IPs/CIDRs/domains); the secrets and
+// dependency/SBOM catalogs are path-based (local directories). Keeping the kind
+// on the catalog — rather than inferring it from the arguments — means the scope
+// gate is decided by the catalog's intent, not by a guess about user input.
+const (
+	KindHost = "host" // target is an IP/CIDR/domain; gated by allowed_targets/domains
+	KindPath = "path" // target is a local directory; gated by allowed_paths
+)
 
 // Tool describes a free/open-source tool hackbot can drive.
 //
@@ -45,35 +56,87 @@ type Tool struct { // one catalog entry
 // Task is a runnable capability: one tool plus a fixed argument template.
 //
 // Placeholders are substituted by the runner at run time: {target}, {host},
-// {url}, {domain}, and {wordlist}. Keeping arguments as a template (rather than a
-// free-form string) is what lets us render an honest dry-run and guarantees the
-// target is passed as a single argv element, never shell-interpolated.
+// {url}, {domain}, {path}, and {wordlist}. {path} is for path-based catalogs
+// (secrets/deps) and is the local directory target. Keeping arguments as a
+// template (rather than a free-form string) is what lets us render an honest
+// dry-run and guarantees the target is passed as a single argv element, never
+// shell-interpolated.
 type Task struct { // one runnable capability
 	Key     string   `json:"key"`            // task id, e.g. "subdomains"
 	Name    string   `json:"name"`           // human name, e.g. "Subdomain enumeration"
 	Group   string   `json:"group"`          // grouping key for `tools <group>`
 	ToolKey string   `json:"tool"`           // catalog key
 	Args    []string `json:"args"`           // argument template
-	Guarded bool     `json:"guarded"`        // true when it sends traffic to the target
+	Guarded bool     `json:"guarded"`        // true when the task must pass the enable gate (sends traffic or reads scoped local data)
 	Note    string   `json:"note,omitempty"` // short caveat / purpose
 }
 
-// Catalog is a named set of tools, tool groups, and tasks (recon or discovery).
+// Catalog is a named set of tools, tool groups, and tasks (recon, discovery,
+// secrets, deps, ...).
 type Catalog struct { // one engine instance
 	Name    string              // e.g. "recon"
+	Kind    string              // KindHost or KindPath: which allowlist gates runs
 	Summary string              // one-line description for `list`
 	BaseURL string              // reference link (e.g. the project docs)
 	tools   map[string]Tool     // key -> tool
 	groups  map[string][]string // group -> tool keys (for `tools <group>`)
 	tasks   []Task              // runnable capabilities, in display order
+	chains  []Chain             // multi-step pipelines (e.g. recon footprint)
 }
 
-// NewCatalog assembles a Catalog from its parts.
+// Chain is a named, ordered pipeline that runs several tasks and can feed one
+// step's output into the next (e.g. subfinder -> httpx). Chains exist so a whole
+// workflow is a first-class, previewable thing rather than a shell one-liner the
+// safety model cannot see: the runner still gates the chain, and a dry-run shows
+// every step before anything executes.
+type Chain struct { // one pipeline
+	Key   string      `json:"key"`            // id, e.g. "footprint"
+	Name  string      `json:"name"`           // human name
+	Note  string      `json:"note,omitempty"` // what the chain accomplishes
+	Steps []ChainStep `json:"steps"`          // ordered steps
+}
+
+// ChainStep is one task in a chain.
+type ChainStep struct { // one link
+	TaskKey      string   `json:"task"`                    // task to run
+	Args         []string `json:"args,omitempty"`          // optional args override (e.g. drop -u to read stdin)
+	FeedPrevious bool     `json:"feed_previous,omitempty"` // pipe the previous step's stdout into this one
+}
+
+// NewCatalog assembles a Catalog from its parts. kind is KindHost or KindPath;
+// an empty kind defaults to KindHost so older call sites keep host semantics.
 //
-// It is exported so recon.go/discovery.go (same package) can build catalogs
-// declaratively, and so tests can construct small catalogs without files.
-func NewCatalog(name, summary, baseURL string, tools map[string]Tool, groups map[string][]string, tasks []Task) *Catalog {
-	return &Catalog{Name: name, Summary: summary, BaseURL: baseURL, tools: tools, groups: groups, tasks: tasks}
+// It is exported so recon.go/discovery.go/secrets.go/deps.go (same package) can
+// build catalogs declaratively, and so tests can construct small catalogs.
+func NewCatalog(name, kind, summary, baseURL string, tools map[string]Tool, groups map[string][]string, tasks []Task) *Catalog {
+	if kind == "" { // default to the host gate...
+		kind = KindHost // ...so a missing kind can never silently mean "path"
+	}
+	return &Catalog{Name: name, Kind: kind, Summary: summary, BaseURL: baseURL, tools: tools, groups: groups, tasks: tasks}
+}
+
+// WithChains attaches pipelines to a catalog and returns the catalog (builder).
+func (c *Catalog) WithChains(chains ...Chain) *Catalog { // fluent, keeps NewCatalog stable
+	c.chains = chains
+	return c
+}
+
+// Chains returns the catalog's pipelines (a copy, so callers can't mutate).
+func (c *Catalog) Chains() []Chain { // used by `<cmd> chains` and the runner
+	out := make([]Chain, len(c.chains))
+	copy(out, c.chains)
+	return out
+}
+
+// ChainByKey looks up a chain by key (case-insensitive).
+func (c *Catalog) ChainByKey(key string) (Chain, bool) { // used by `<cmd> <chain>`
+	k := strings.ToLower(strings.TrimSpace(key))
+	for _, ch := range c.chains {
+		if strings.EqualFold(ch.Key, k) {
+			return ch, true
+		}
+	}
+	return Chain{}, false
 }
 
 // Tools returns the whole catalog sorted by key (deterministic for display).
@@ -143,17 +206,26 @@ func (c *Catalog) TaskByKey(key string) (Task, bool) { // used by `<cmd> <task>`
 // read as a plan rather than a broken command. When target is set we derive the
 // host/domain by stripping any scheme/port/path (via scan.NormalizeDomain, the
 // same normalizer the scope check uses, so display and safety agree).
-func Subs(scheme, target, wordlist string) map[string]string { // shared by plan + runner
+//
+// kind matters: a KindPath target is a directory, not a host, so we set {path}
+// and deliberately do NOT compute {host}/{domain}/{url} from it (passing a
+// filesystem path through NormalizeDomain would produce nonsense). A KindHost
+// target gets the host/domain/url set as before.
+func Subs(kind, scheme, target, wordlist string) map[string]string { // shared by plan + runner
 	subs := map[string]string{}          // placeholder -> value
 	if strings.TrimSpace(target) != "" { // only substitute when we have a target
-		host := scan.NormalizeDomain(target) // strip scheme/port/path
-		if host == "" {                      // a bare IPv6 or odd input...
-			host = strings.TrimSpace(target) // ...fall back to the raw target
+		subs["target"] = strings.TrimSpace(target) // always: the raw target
+		if kind == KindPath {                      // path-based catalog...
+			subs["path"] = strings.TrimSpace(target) // ...the directory is {path}
+		} else { // host-based catalog
+			host := scan.NormalizeDomain(target) // strip scheme/port/path
+			if host == "" {                      // a bare IPv6 or odd input...
+				host = strings.TrimSpace(target) // ...fall back to the raw target
+			}
+			subs["host"] = host                                      // host form
+			subs["domain"] = host                                    // domain alias
+			subs["url"] = scheme + "://" + strings.TrimSpace(target) // URL form
 		}
-		subs["target"] = strings.TrimSpace(target)
-		subs["host"] = host
-		subs["domain"] = host
-		subs["url"] = scheme + "://" + strings.TrimSpace(target)
 	}
 	if strings.TrimSpace(wordlist) != "" { // a wordlist only matters when set
 		subs["wordlist"] = strings.TrimSpace(wordlist)
@@ -197,7 +269,7 @@ type PlanStep struct { // used by `<cmd> plan`
 // are fully rendered. This single function powers both `<cmd> plan` and the
 // dry-run banner.
 func (c *Catalog) Plan(scheme, target, wordlist string) []PlanStep { // used by `<cmd> plan`
-	subs := Subs(scheme, target, wordlist) // compute substitutions once
+	subs := Subs(c.Kind, scheme, target, wordlist) // compute substitutions once
 	steps := make([]PlanStep, 0, len(c.tasks))
 	for _, t := range c.tasks { // one step per task
 		tool, ok := c.ToolByKey(t.ToolKey) // resolve the tool
@@ -216,4 +288,23 @@ func (c *Catalog) Plan(scheme, target, wordlist string) []PlanStep { // used by 
 		})
 	}
 	return steps
+}
+
+// CheckScope applies the allowlist gate appropriate to a catalog kind.
+//
+// It is exported so the CLI can pre-check for a precise message while the Runner
+// re-checks authoritatively; both call this one function so the two can never
+// disagree. KindPath consults allowedPaths via scan.PathInScope; anything else
+// consults the IP and domain allowlists via scan.TargetInScope.
+func CheckScope(kind, target string, allowedTargets, allowedDomains, allowedPaths []string) error { // shared gate
+	if kind == KindPath { // local filesystem target
+		if !scan.PathInScope(target, allowedPaths) { // gated by allowed_paths
+			return fmt.Errorf("path %q is not inside allowed_paths; refusing to run", target)
+		}
+		return nil
+	}
+	if !scan.TargetInScope(target, allowedTargets, allowedDomains) { // IP or domain allowlist
+		return fmt.Errorf("target %q is not in the configured allowlist; refusing to run", target)
+	}
+	return nil
 }

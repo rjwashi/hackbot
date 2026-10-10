@@ -75,14 +75,27 @@ Commands:
   web run <category> <tgt>  Run guarded checks (dry-run by default)
 
   recon list                List recon/OSINT tasks (subdomains, dns, ports, ...)
+  recon chains              List recon pipelines (e.g. footprint)
   recon tools [group]       List the free recon tools
   recon plan                Show every recon task and its command
   recon <task> <target>     Run a recon task (dry-run by default)
+  recon footprint <target>  Chain: subfinder subdomains -> httpx live probe
 
   discover list             List content-discovery tasks
+  discover chains           List discovery pipelines (none yet)
   discover tools [group]    List the free content-discovery tools
   discover plan             Show every discovery task and its command
   discover <task> <target>  Run a discovery task (dry-run by default)
+
+  secrets list              List secret-scanning tasks (scan, history, verify, entropy)
+  secrets tools [group]     List the free secret scanners
+  secrets plan              Show every secrets task and its command
+  secrets <task> <path>     Run a secret scan on a local path (dry-run by default)
+
+  deps list                 List dependency/SBOM tasks (vulns, sbom, grype, osv)
+  deps tools [group]        List the free dependency/SBOM tools
+  deps plan                 Show every deps task and its command
+  deps <task> <path>        Run a dependency/SBOM scan on a local path (dry-run by default)
 
 Common flags:
   -config PATH              Path to a JSON config file (optional)
@@ -94,7 +107,7 @@ web run flags:
   -scheme SCHEME            URL scheme used to build {url} (default https)
   -test ID                  Run only one WSTG test id (e.g. WSTG-INJT-05)
 
-recon/discover flags:
+recon/discover/secrets/deps flags:
   -dry-run                  Do not execute tools (default true; pass -dry-run=false)
   -timeout DURATION         Per-task timeout (default 60s)
   -scheme SCHEME            URL scheme used to build {url} (default https)
@@ -122,8 +135,9 @@ agents flags:
   -name NAME                Agent name for -format skill
 
 Safety: scanning is disabled unless enable_scan is true AND the target is in
-allowed_targets (IPs/CIDRs) or allowed_domains (names). Only scan systems you own
-or are explicitly authorized to test.
+allowed_targets (IPs/CIDRs) or allowed_domains (names); local tools (secrets/deps)
+additionally require the path to be inside allowed_paths. Only scan systems you
+own or are explicitly authorized to test.
 ` // end of usage text
 
 func main() { // program entry point
@@ -137,7 +151,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover", "secrets", "deps": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -256,6 +270,20 @@ func runCommand(command string, args []string) error { // shared preamble
 			timeout:  *webTimeout,                                                 // per-task timeout
 			scheme:   *webScheme,                                                  // URL scheme
 			wordlist: firstNonEmpty(*wordlist, cfg.Wordlist, ops.DefaultWordlist), // wordlist resolution
+		})
+	case "secrets": // local secret-scanning agents
+		return runOps(cfg, ops.SecretsCatalog(), fs.Args(), opsFlags{ // secrets catalog (path targets)
+			json:    *asJSON,     // JSON output
+			dryRun:  *dryRun,     // dry-run default true
+			timeout: *webTimeout, // per-task timeout
+			scheme:  *webScheme,  // URL scheme (unused by path catalogs, harmless)
+		})
+	case "deps": // dependency / SBOM agents
+		return runOps(cfg, ops.DepsCatalog(), fs.Args(), opsFlags{ // deps catalog (path targets)
+			json:    *asJSON,     // JSON output
+			dryRun:  *dryRun,     // dry-run default true
+			timeout: *webTimeout, // per-task timeout
+			scheme:  *webScheme,  // URL scheme (unused by path catalogs, harmless)
 		})
 	}
 	return nil // unreachable
@@ -752,15 +780,18 @@ type opsFlags struct {
 // Subcommands:
 //
 //	<cmd> list               list the tasks (default)
+//	<cmd> chains             list the multi-step pipelines (e.g. footprint)
 //	<cmd> tools [group]      list the free tools, or one group's tools
 //	<cmd> plan [task]        show every task (or one) with its command
 //	<cmd> <task> <target>    run a task (guarded, dry-run default)
+//	<cmd> <chain> <target>   run a chain (guarded, dry-run default)
 //	<cmd> run <task> <target>  explicit run form
 //
 // WHY the bare `<task> <target>` form: it is the common case, so we accept it
 // directly (like `web <category>`), while `run` stays available for scripts that
-// want an explicit verb.
-func runOps(cfg config.Config, cat *ops.Catalog, args []string, fl opsFlags) error { // used by recon/discover
+// want an explicit verb. A chain key is accepted in the same position, so
+// `recon footprint example.com` works without a special verb.
+func runOps(cfg config.Config, cat *ops.Catalog, args []string, fl opsFlags) error { // used by recon/discover/secrets/deps
 	sub := "" // subcommand (lowercased); empty means "list"
 	if len(args) > 0 {
 		sub = strings.ToLower(args[0])
@@ -778,21 +809,49 @@ func runOps(cfg config.Config, cat *ops.Catalog, args []string, fl opsFlags) err
 		}
 		fmt.Print(opsList(cat))
 		return nil
+	case "chains": // multi-step pipelines
+		return runOpsChains(cat, fl)
 	case "tools": // free tooling
 		return runOpsTools(cat, args[1:], fl)
 	case "plan": // rendered commands
 		return runOpsPlan(cat, args[1:], fl)
 	case "run": // explicit run form
-		if len(args) < 3 { // need <task> <target>
+		if len(args) < 3 { // need <task|chain> <target>
 			return fmt.Errorf("%s run: usage: %s run <task> <target> (dry-run by default)", cat.Name, cat.Name)
 		}
+		if ch, ok := cat.ChainByKey(args[1]); ok { // a chain can also be run explicitly
+			return runOpsChain(cfg, cat, ch, args[2], fl)
+		}
 		return runOpsTask(cfg, cat, args[1], args[2], fl)
-	default: // bare <task> <target>
+	default: // bare <task|chain> <target>
 		if len(args) < 2 { // a task needs a target
 			return fmt.Errorf("%s: usage: %s <task> <target> (try: hackbot %s list)", cat.Name, cat.Name, cat.Name)
 		}
+		if ch, ok := cat.ChainByKey(args[0]); ok { // a chain key takes precedence here
+			return runOpsChain(cfg, cat, ch, args[1], fl)
+		}
 		return runOpsTask(cfg, cat, args[0], args[1], fl)
 	}
+}
+
+// runOpsChains lists a catalog's multi-step pipelines (its `chains` subcommand).
+func runOpsChains(cat *ops.Catalog, fl opsFlags) error { // used by `<cmd> chains`
+	chains := cat.Chains() // declared order
+	if len(chains) == 0 {  // not every catalog has chains yet
+		fmt.Printf("%s: no chains defined\n", cat.Name)
+		return nil
+	}
+	if fl.json {
+		return printJSON(chains)
+	}
+	fmt.Printf("%s: %d chain(s)\n", cat.Name, len(chains))
+	for _, ch := range chains { // one line per chain
+		fmt.Printf("  %-12s %-40s %d step(s)\n", ch.Key, ch.Name, len(ch.Steps))
+		if ch.Note != "" {
+			fmt.Printf("      %s\n", ch.Note)
+		}
+	}
+	return nil
 }
 
 // opsList renders a catalog's tasks as a short catalog.
@@ -866,10 +925,11 @@ func runOpsPlan(cat *ops.Catalog, rest []string, fl opsFlags) error { // used by
 }
 
 // runOpsTask runs one task against a target with the same two safety gates as
-// scanning: enable_scan must be true and the target must be inside allowed_targets
-// (IP/CIDR) or allowed_domains (name). We pre-check here for a precise message;
-// the runner enforces the same rules authoritatively. Dry-run needs neither gate
-// because it sends nothing.
+// scanning, chosen by the catalog's kind: enable_scan must be true, and the
+// target must be inside the matching allowlist (allowed_paths for a KindPath
+// catalog, otherwise allowed_targets/allowed_domains). We pre-check here for a
+// precise message; the runner enforces the same rules authoritatively via the
+// shared ops.CheckScope. Dry-run needs neither gate because it sends nothing.
 func runOpsTask(cfg config.Config, cat *ops.Catalog, taskKey, target string, fl opsFlags) error { // used by `<cmd> <task>`
 	task, ok := cat.TaskByKey(taskKey) // look up the task
 	if !ok {                           // unknown task...
@@ -879,14 +939,15 @@ func runOpsTask(cfg config.Config, cat *ops.Catalog, taskKey, target string, fl 
 		if !cfg.EnableScan { // master switch
 			return fmt.Errorf("%s: %w", cat.Name, ops.ErrDisabled)
 		}
-		if !scan.TargetInScope(target, cfg.AllowedTargets, cfg.AllowedDomains) { // allowlist
-			return fmt.Errorf("%s: target %q is not in allowed_targets/allowed_domains; refusing to run", cat.Name, target)
+		if err := ops.CheckScope(cat.Kind, target, cfg.AllowedTargets, cfg.AllowedDomains, cfg.AllowedPaths); err != nil { // kind-aware allowlist
+			return fmt.Errorf("%s: %w", cat.Name, err)
 		}
 	}
 	runner := ops.New(cat, ops.Options{ // assemble the guarded runner
 		Enable:         cfg.EnableScan,
 		AllowedTargets: cfg.AllowedTargets,
 		AllowedDomains: cfg.AllowedDomains,
+		AllowedPaths:   cfg.AllowedPaths,
 		DryRun:         fl.dryRun,
 		Timeout:        fl.timeout,
 		Scheme:         fl.scheme,
@@ -918,6 +979,67 @@ func runOpsTask(cfg config.Config, cat *ops.Catalog, taskKey, target string, fl 
 	}
 	if res.Error != "" { // show tool errors
 		fmt.Printf("      error: %s\n", res.Error)
+	}
+	return nil
+}
+
+// runOpsChain runs a multi-step pipeline against one target, applying exactly the
+// same two gates as runOpsTask (enable_scan plus the kind-appropriate allowlist).
+// The up-front check mirrors the runner so the operator gets a clear message; the
+// runner re-checks authoritatively. Each step's output is shown indented, and a
+// step fed from the previous one is labeled so a dry-run clearly shows the flow.
+func runOpsChain(cfg config.Config, cat *ops.Catalog, ch ops.Chain, target string, fl opsFlags) error { // used by `<cmd> <chain>`
+	if !fl.dryRun { // real runs enforce the gates up front
+		if !cfg.EnableScan { // master switch
+			return fmt.Errorf("%s: %w", cat.Name, ops.ErrDisabled)
+		}
+		if err := ops.CheckScope(cat.Kind, target, cfg.AllowedTargets, cfg.AllowedDomains, cfg.AllowedPaths); err != nil { // kind-aware allowlist
+			return fmt.Errorf("%s: %w", cat.Name, err)
+		}
+	}
+	runner := ops.New(cat, ops.Options{ // assemble the guarded runner
+		Enable:         cfg.EnableScan,
+		AllowedTargets: cfg.AllowedTargets,
+		AllowedDomains: cfg.AllowedDomains,
+		AllowedPaths:   cfg.AllowedPaths,
+		DryRun:         fl.dryRun,
+		Timeout:        fl.timeout,
+		Scheme:         fl.scheme,
+		Wordlist:       fl.wordlist,
+		Log:            func(s string) { fmt.Fprintln(os.Stderr, "hackbot:", s) },
+	})
+	results, err := runner.RunChain(context.Background(), ch, target) // execute (or preview) every step
+	if err != nil {
+		return err
+	}
+	if fl.json { // JSON mode
+		return printJSON(results)
+	}
+	if fl.dryRun { // make the safety state explicit
+		fmt.Println("dry-run: no traffic sent (pass -dry-run=false to execute)")
+	}
+	fmt.Printf("%s: chain %q (%d step(s))\n", cat.Name, ch.Key, len(results)) // headline
+	for _, res := range results {                                             // one block per step, in order
+		status := "ok" // default label
+		switch {       // choose a label
+		case res.DryRun:
+			status = "dry"
+		case !res.OK:
+			status = "error"
+		}
+		feed := "" // stdin annotation
+		if res.Stdin {
+			feed = " (stdin <- previous)" // this step consumed the previous step's output
+		}
+		fmt.Printf("  [%s] %-12s %s%s\n", status, res.Task, res.Command, feed)
+		if res.Output != "" { // show captured output, indented
+			for _, line := range strings.Split(res.Output, "\n") {
+				fmt.Printf("      %s\n", line)
+			}
+		}
+		if res.Error != "" { // show tool errors
+			fmt.Printf("      error: %s\n", res.Error)
+		}
 	}
 	return nil
 }
@@ -1161,6 +1283,64 @@ var agents = []agentInfo{ // listed by `hackbot agents`
 		Command:     "discover params <target>",
 		Description: "Hidden parameter discovery with ffuf",
 		Triggers:    []string{"find hidden query parameters", "discover unlinked parameters"},
+	},
+	// Recon pipeline agent: a whole chain in one command.
+	{
+		Name:        "recon-footprint",
+		Command:     "recon footprint <target>",
+		Description: "Chain: enumerate subdomains with subfinder, then probe them with httpx",
+		Triggers:    []string{"map a domain's live attack surface in one step", "find live subdomains and their tech stack"},
+	},
+	// Secrets-scanning agents (family: `secrets`). KindPath: these read a local
+	// directory and are gated by allowed_paths, not the network allowlists.
+	{
+		Name:        "secrets-scan",
+		Command:     "secrets scan <path>",
+		Description: "Scan a working tree for secrets with gitleaks",
+		Triggers:    []string{"scan a checkout for hardcoded secrets", "find API keys in a directory"},
+	},
+	{
+		Name:        "secrets-history",
+		Command:     "secrets history <path>",
+		Description: "Scan a git repository's full history for secrets with gitleaks",
+		Triggers:    []string{"find secrets left in git history", "audit a repo's past commits for credentials"},
+	},
+	{
+		Name:        "secrets-verify",
+		Command:     "secrets verify <path>",
+		Description: "Scan and verify live secrets with trufflehog",
+		Triggers:    []string{"check whether found secrets are still active", "verify leaked credentials"},
+	},
+	{
+		Name:        "secrets-entropy",
+		Command:     "secrets entropy <path>",
+		Description: "High-recall entropy/pattern secret baseline with detect-secrets",
+		Triggers:    []string{"catch unknown secret formats by entropy", "baseline a repository for secrets"},
+	},
+	// Dependency / SBOM agents (family: `deps`). Also KindPath (local project).
+	{
+		Name:        "deps-vulns",
+		Command:     "deps vulns <path>",
+		Description: "Dependency/OS vulnerability scan with trivy",
+		Triggers:    []string{"find vulnerable dependencies in a project", "scan a directory for known CVEs"},
+	},
+	{
+		Name:        "deps-sbom",
+		Command:     "deps sbom <path>",
+		Description: "Generate a CycloneDX SBOM with syft",
+		Triggers:    []string{"produce a software bill of materials", "generate an SBOM for a project"},
+	},
+	{
+		Name:        "deps-grype",
+		Command:     "deps grype <path>",
+		Description: "Directory vulnerability scan with grype",
+		Triggers:    []string{"scan lockfiles and packages with grype", "cross-check dependencies against another database"},
+	},
+	{
+		Name:        "deps-osv",
+		Command:     "deps osv <path>",
+		Description: "Dependency scan against the OSV database with osv-scanner",
+		Triggers:    []string{"query OSV for dependency vulnerabilities", "scan manifests with Google's OSV database"},
 	},
 }
 

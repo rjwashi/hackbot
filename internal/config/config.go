@@ -54,6 +54,12 @@ type Config struct { // one struct with JSON tags; env overrides applied after l
 	// (ffuf/gobuster). Empty falls back to the built-in SecLists default.
 	// Overridable via HACKBOT_WORDLIST.
 	Wordlist string `json:"wordlist"` // e.g. /usr/share/seclists/Discovery/Web-Content/common.txt
+	// AllowedPaths is the allowlist of local directories the secrets and
+	// dependency/SBOM agents may read. It is separate from the network allowlists
+	// because those express "which host may I talk to", not "which files may I
+	// read". Empty means "the current working directory" (see scan.PathInScope).
+	// Overridable via HACKBOT_ALLOWED_PATHS (comma-separated).
+	AllowedPaths []string `json:"allowed_paths"` // e.g. ["/srv/app", "."]
 
 	// ---- agent pipeline ----
 
@@ -141,6 +147,9 @@ func Load(path string) (Config, error) { // main constructor
 	}
 	if v := os.Getenv("HACKBOT_WORDLIST"); v != "" { // env override for the discovery wordlist
 		cfg.Wordlist = v
+	}
+	if v := os.Getenv("HACKBOT_ALLOWED_PATHS"); v != "" { // env override for the local path allowlist
+		cfg.AllowedPaths = splitList(v) // same comma parsing as the other allowlists
 	}
 	if v := os.Getenv("HACKBOT_LLM_BASE_URL"); v != "" { // env override for LLM base URL
 		cfg.LLMBaseURL = v

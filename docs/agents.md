@@ -43,12 +43,22 @@ in sync).
 | `discover-extensions` | `hackbot discover extensions <target>` | Extension brute force (backups, scripts) with gobuster |
 | `discover-vhosts` | `hackbot discover vhosts <target>` | Virtual host discovery by fuzzing the Host header with ffuf |
 | `discover-params` | `hackbot discover params <target>` | Hidden parameter discovery with ffuf |
+| `recon-footprint` | `hackbot recon footprint <target>` | Chain: enumerate subdomains with subfinder, then probe them with httpx |
+| `secrets-scan` | `hackbot secrets scan <path>` | Scan a working tree for secrets with gitleaks |
+| `secrets-history` | `hackbot secrets history <path>` | Scan a git repository's full history for secrets with gitleaks |
+| `secrets-verify` | `hackbot secrets verify <path>` | Scan and verify live secrets with trufflehog |
+| `secrets-entropy` | `hackbot secrets entropy <path>` | High-recall entropy/pattern secret baseline with detect-secrets |
+| `deps-vulns` | `hackbot deps vulns <path>` | Dependency/OS vulnerability scan with trivy |
+| `deps-sbom` | `hackbot deps sbom <path>` | Generate a CycloneDX SBOM with syft |
+| `deps-grype` | `hackbot deps grype <path>` | Directory vulnerability scan with grype |
+| `deps-osv` | `hackbot deps osv <path>` | Dependency scan against the OSV database with osv-scanner |
 <!-- END AGENTS TABLE -->
 
 Underlying packages: `internal/nmap` (parse + analyze + NSE recon),
-`internal/scan` (guarded runner + scope), `internal/vulscan` (VulDB matching),
-`internal/cve` (NVD client/agent), `internal/wstg` (WSTG checklists),
-`internal/ops` (recon + content-discovery engine), `internal/agent` (pipeline).
+`internal/scan` (guarded runner + scope + stdin pipe), `internal/vulscan` (VulDB
+matching), `internal/cve` (NVD client/agent), `internal/wstg` (WSTG checklists),
+`internal/ops` (recon + discovery + secrets + deps engine, incl. chains),
+`internal/agent` (pipeline).
 
 ## Web Security Testing (WSTG) agents
 
@@ -87,14 +97,24 @@ catalog and tasks live in `internal/ops` (`recon.go`):
 
 ```bash
 hackbot recon list               # tasks: subdomains, dns, ports, services, http, whois, urls
+hackbot recon chains             # pipelines (currently: footprint)
 hackbot recon tools subdomains   # tools for one capability (subfinder, amass)
 hackbot recon plan               # every task and the command it runs
 hackbot recon subdomains example.com   # guarded (dry-run by default)
+hackbot recon footprint example.com    # chain: subdomains -> live HTTP
 ```
 
 Recon operates on **domain names**, which the IP/CIDR allowlist deliberately
 refuses, so `internal/scan/scope.go` adds an explicit `allowed_domains` allowlist
 (a listed domain covers its subdomains, with a strict label boundary).
+
+A **chain** (`internal/ops.Chain`) composes tasks by piping one step's stdout
+into the next step's stdin through a real OS pipe (`scan.StdinRunner`), never a
+shell, so no target-derived data is ever interpolated into a command string. The
+`footprint` chain runs `subfinder` and feeds the discovered subdomains straight
+into `httpx`. A chain is gated exactly once, up front, by the same
+`enable_scan` + allowlist rules as a single task, and it stops at the first
+failing step so a later tool is never handed empty or partial input.
 
 ## Content discovery agents (`discover`)
 
@@ -112,7 +132,47 @@ Wordlists come from `wordlist` (config) or `-wordlist`, defaulting to the free
 SecLists `common.txt`. Both `recon` and `discover` share the guarded runner:
 dry-run unless `-dry-run=false`, and real runs require `enable_scan=true` plus an
 allowlisted target. `TestReconDiscoverAgentsCoverTasks` keeps the registry in
-step with the catalogs.
+step with the catalogs (tasks **and** chains).
+
+## Secret-scanning agents (`secrets`)
+
+Four agents scan a **local path** for leaked credentials with free scanners. The
+catalog lives in `internal/ops` (`secrets.go`) and is a **path-kind** catalog:
+because the target is a directory rather than a host, the gate is
+`enable_scan=true` plus the path being inside `allowed_paths` (with no roots
+configured, the current working directory is the only allowed root):
+
+```bash
+hackbot secrets list
+hackbot secrets plan
+hackbot secrets scan .       # working tree (gitleaks)
+hackbot secrets history .    # full git history (gitleaks)
+hackbot secrets verify .     # only live-verified findings (trufflehog)
+hackbot secrets entropy .    # entropy/pattern baseline (detect-secrets)
+```
+
+The path check is segment-boundary aware, so an allowed root `/srv/app` does
+**not** admit `/srv/app-evil` (the path analogue of the `notexample.com` domain
+trap); see `scan.PathInScope`.
+
+## Dependency / SBOM agents (`deps`)
+
+Four agents produce a software bill of materials and a vulnerability report for a
+local project, also path-kind and gated by `allowed_paths`. The catalog lives in
+`internal/ops` (`deps.go`):
+
+```bash
+hackbot deps list
+hackbot deps plan
+hackbot deps vulns .    # dependency + OS CVE scan (trivy)
+hackbot deps sbom .     # CycloneDX SBOM (syft)
+hackbot deps grype .    # alternate DB match (grype)
+hackbot deps osv .      # OSV database scan (osv-scanner)
+```
+
+The scanners download their vulnerability databases, so only the scanned files
+are local; the database fetches make outbound requests. All four are free and
+open-source (trivy/grype/osv-scanner/syft are Apache-2.0).
 
 ## Skills
 
@@ -218,10 +278,12 @@ improvements, roughly in order:
 ### 6. Safety and scope stay paramount
 - Only scan systems you own or are explicitly authorized to test. The scanner
   refuses targets outside `allowed_targets` (IPs/CIDRs) or `allowed_domains`
-  (names) and requires `enable_scan=true`. The `recon`, `discover`, and
-  `web run` agents share this model.
-- `web run`, `recon *`, and `discover *` are **dry-run by default**; pass
-  `-dry-run=false` to send traffic.
+  (names) and requires `enable_scan=true`. Local scanners (`secrets`, `deps`)
+  instead require the path to be inside `allowed_paths`. The `recon`, `discover`,
+  and `web run` agents share this model; one shared gate (`ops.CheckScope`)
+  enforces it.
+- `web run`, `recon *`, `discover *`, `secrets *`, and `deps *` are
+  **dry-run by default**; pass `-dry-run=false` to send traffic or read files.
 - Issue creation is dry-run by default; keep the `-min-severity` gate
   (vulscan findings are MEDIUM *potential*, so they don't auto-file at the
   default HIGH threshold).
@@ -237,8 +299,9 @@ improvements, roughly in order:
 3. **EPSS/KEV sorting** in the `cve` agent ranking.
 4. **On-disk cache** for NVD responses.
 5. **SARIF/CycloneDX exporters** for CI.
-6. **Recon → discovery chaining**: feed `recon subdomains`/`recon http` output
-   into `discover` so one allowlisted seed expands into a full footprint.
-7. **More agent families** using the same `internal/ops` engine: secrets
-   scanning (gitleaks/trufflehog), dependency/SBOM (trivy/grype/osv-scanner),
-   and cloud posture (prowler).
+6. **Chain more stages**: `recon footprint` (subdomains → HTTP) ships; the next
+   natural step is feeding `recon http` output into `discover` so one allowlisted
+   seed expands into a full footprint, and pushing `secrets`/`deps` findings into
+   the same report.
+7. **One more agent family** using the same `internal/ops` engine: cloud posture
+   (prowler), which needs cloud credentials plus an account allowlist.

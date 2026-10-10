@@ -261,18 +261,22 @@ func TestWebAgentsCoverChecklists(t *testing.T) { // registry <-> checklists inv
 	}
 }
 
-// TestReconDiscoverAgentsCoverTasks verifies every runnable ops task has a
-// matching registry agent (recon-<task> / discover-<task>). This keeps the
-// single-source registry in step with the catalogs, mirroring the WSTG check.
+// TestReconDiscoverAgentsCoverTasks verifies every runnable ops task and every
+// chain has a matching registry agent (recon-<task>, discover-<task>,
+// secrets-<task>, deps-<task>, and recon-footprint for the shipped chain). This
+// keeps the single-source registry in step with the catalogs, mirroring the WSTG
+// check, and it covers the chain agents too so a pipeline cannot ship unlisted.
 func TestReconDiscoverAgentsCoverTasks(t *testing.T) { // registry <-> catalog invariant
-	for _, tc := range []struct { // both families
+	for _, tc := range []struct { // every family
 		prefix string
 		cat    *ops.Catalog
 	}{
 		{"recon-", ops.ReconCatalog()},        // recon tasks -> recon-* agents
 		{"discover-", ops.DiscoveryCatalog()}, // discovery tasks -> discover-* agents
+		{"secrets-", ops.SecretsCatalog()},    // secrets tasks -> secrets-* agents
+		{"deps-", ops.DepsCatalog()},          // deps tasks -> deps-* agents
 	} {
-		command := strings.TrimSuffix(tc.prefix, "-") // "recon" / "discover"
+		command := strings.TrimSuffix(tc.prefix, "-") // "recon" / "discover" / ...
 		for _, task := range tc.cat.Tasks() {         // every task needs an agent
 			name := tc.prefix + task.Key // expected agent name
 			a, ok := findAgent(name)     // look it up
@@ -281,6 +285,17 @@ func TestReconDiscoverAgentsCoverTasks(t *testing.T) { // registry <-> catalog i
 				continue
 			}
 			if want := command + " " + task.Key; !strings.Contains(a.Command, want) { // command points at the task
+				t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
+			}
+		}
+		for _, ch := range tc.cat.Chains() { // every chain also needs an agent
+			name := tc.prefix + ch.Key // e.g. recon-footprint
+			a, ok := findAgent(name)   // look it up
+			if !ok {
+				t.Errorf("no agent for chain %s (expected %q)", ch.Key, name)
+				continue
+			}
+			if want := command + " " + ch.Key; !strings.Contains(a.Command, want) {
 				t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
 			}
 		}

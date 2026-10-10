@@ -74,6 +74,7 @@ func DiscoveryCatalog() *Catalog { // used by `hackbot discover`
 
 	return NewCatalog( // assemble
 		"discover",
+		KindHost, // web targets; gated by allowed_targets/allowed_domains
 		"Content discovery: directories, files, extensions, virtual hosts, parameters",
 		"https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/01-Information_Gathering/",
 		tools, groups, tasks,

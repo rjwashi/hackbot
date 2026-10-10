@@ -118,8 +118,23 @@ func ReconCatalog() *Catalog { // used by `hackbot recon`
 
 	return NewCatalog( // assemble
 		"recon",
+		KindHost, // host/domain targets; gated by allowed_targets/allowed_domains
 		"OSINT reconnaissance: subdomains, DNS, ports, services, HTTP, WHOIS, archived URLs",
 		"https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/01-Information_Gathering/",
 		tools, groups, tasks,
+	).WithChains( // multi-step pipelines
+		Chain{ // domain footprint: enumerate subdomains, then probe them for live HTTP
+			Key:  "footprint",
+			Name: "Domain footprint (subdomains -> live HTTP)",
+			Note: "subfinder enumerates subdomains; piped straight into httpx to find which are live web services. One allowlisted seed domain, one command.",
+			Steps: []ChainStep{
+				{TaskKey: "subdomains"}, // subfinder -d {host} -silent
+				{
+					TaskKey:      "http",                                                                             // httpx, but reading the list from stdin
+					FeedPrevious: true,                                                                               // pipe subfinder's stdout in
+					Args:         []string{"-silent", "-status-code", "-title", "-tech-detect", "-follow-redirects"}, // no -u: httpx reads stdin
+				},
+			},
+		},
 	)
 }
