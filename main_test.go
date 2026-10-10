@@ -199,6 +199,21 @@ func TestAgentsDocsInSync(t *testing.T) { // guards against stale docs
 	}
 }
 
+// TestLayoutDocsInSync fails if the generated repo layout drifts from the README.
+//
+// Run `hackbot layout` from the repo root and paste the output between the
+// markers so this test stays green.
+func TestLayoutDocsInSync(t *testing.T) { // guards the README layout tree
+	readme := extractBetween(t, "README.md", layoutBegin, layoutEnd) // README layout block
+	want, err := layoutText(".")                                     // generate from the working tree
+	if err != nil {
+		t.Fatalf("layoutText: %v", err)
+	}
+	if got := stripCodeFence(readme); got != strings.TrimRight(want, "\n") { // must match
+		t.Errorf("README.md layout is stale\n--- want ---\n%s\n--- got ---\n%s", want, got)
+	}
+}
+
 // extractBetween returns the text between two markers in a file, normalized to
 // LF and trimmed of surrounding newlines.
 func extractBetween(t *testing.T, path, begin, end string) string { // test helper
