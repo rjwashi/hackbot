@@ -10,6 +10,15 @@ env/
 dist/
 build/
 
+# Go
+/bin/
+/dist/
+*.exe
+*.exe~
+*.test
+*.out
+coverage.out
+
 # Node
 node_modules/
 npm-debug.log*
