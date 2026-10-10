@@ -37,7 +37,7 @@ Commands:
   run                       Run the bot once (loads config, executes bot steps)
   py <helper> [args...]     Run a Python helper (Go->Python escape hatch)
   version                   Print version
-  agents                    List the available agents
+  agents                    List the available agents (see agents flags below)
   help                      Show this help
 
   nmap parse   <file>       Parse an nmap XML file and list hosts/ports
@@ -72,6 +72,10 @@ nmap pipeline flags:
 cve flags:
   -limit N                  Max CVE results to show (default 20)
   -min-score X              Only CVEs with CVSS >= X
+
+agents flags:
+  -format FMT               Output format: text (default), markdown, json, skill
+  -name NAME                Agent name for -format skill
 
 Safety: scanning is disabled unless enable_scan is true AND the target is in
 allowed_targets. Only scan systems you own or are explicitly authorized to test.
@@ -127,6 +131,10 @@ func runCommand(command string, args []string) error { // shared preamble
 	limit := fs.Int("limit", 20, "max CVE results to show")              // display cap
 	minScore := fs.Float64("min-score", 0, "minimum CVSS score to show") // score floor
 
+	// agents flags.
+	agentFormat := fs.String("format", "text", "agents output format: text|markdown|json|skill") // listing format
+	agentName := fs.String("name", "", "agent name for -format skill")                           // skill target
+
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }      // give the flag set our usage text
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil { // parse flags anywhere on the line
 		return err // propagate parse errors
@@ -142,8 +150,7 @@ func runCommand(command string, args []string) error { // shared preamble
 		fmt.Printf("Hello from hackbot! (config: %s)\n", cfg.String()) // show config summary
 		return nil
 	case "agents": // list the available agents
-		printAgents()
-		return nil
+		return printAgents(*agentFormat, *agentName)
 	case "run": // one bot cycle
 		return bot.New(cfg).Run(context.Background())
 	case "py": // Python escape hatch
@@ -441,30 +448,167 @@ func withVulscanDB(args string, enabled bool, db string) string { // builds --sc
 	return args + "," + kv // otherwise append it
 }
 
-// agentInfo describes one available agent for `hackbot agents`.
-type agentInfo struct { // rows in the agent listing
-	Name        string // short agent name
-	Command     string // how to invoke it
-	Description string // what it does
+// agentInfo describes one available agent for `hackbot agents` and the docs.
+//
+// The registry below is the single source of truth: the CLI listing, the
+// Markdown catalog in docs/agents.md, the README snapshot, and (later) OpenCode
+// skills are all derived from it, and a test fails if the docs drift.
+type agentInfo struct { // one row in the registry
+	Name        string   `json:"name"`        // short agent name; doubles as the planned skill id
+	Command     string   `json:"command"`     // invocation without the leading "hackbot"
+	Description string   `json:"description"` // one-line summary (also the future skill description)
+	Triggers    []string `json:"triggers"`    // phrases that should invoke this agent/skill later
 }
 
 // agents is the registry of security agents the CLI exposes.
 var agents = []agentInfo{ // listed by `hackbot agents`
-	{"nmap-analyze", "nmap analyze <file>", "Rule-based exposure report from an nmap XML file"},
-	{"nmap-recon", "nmap recon <file>", "NSE script reconnaissance (banners, titles, headers, keys)"},
-	{"nmap-vulscan", "nmap vulscan <file>", "VulDB vulnerability matches from vulscan NSE output"},
-	{"nmap-pipeline", "nmap pipeline <file> [-llm] [-issues]", "Full pipeline: analyze + recon + vulscan [+ LLM] [+ issues]"},
-	{"cve-category", "cve search <category>", "Search NVD for CVEs by category (xss, sqli, rce, ...)"},
-	{"cve-keyword", "cve keyword <text>", "Free-text CVE search across NVD"},
-	{"cve-scan", "cve scan <nmap.xml>", "Find CVEs for software nmap fingerprinted"},
+	{
+		Name:        "nmap-analyze",
+		Command:     "nmap analyze <file>",
+		Description: "Rule-based exposure report from an nmap XML file (flags risky open services)",
+		Triggers:    []string{"analyze an nmap scan for risky exposed services", "review an nmap XML file for security issues"},
+	},
+	{
+		Name:        "nmap-recon",
+		Command:     "nmap recon <file>",
+		Description: "NSE script reconnaissance: banners, titles, headers, keys",
+		Triggers:    []string{"list NSE script output from an nmap scan", "pull banners and service details from nmap XML"},
+	},
+	{
+		Name:        "nmap-vulscan",
+		Command:     "nmap vulscan <file>",
+		Description: "Potential (unconfirmed) VulDB matches from vulscan NSE output",
+		Triggers:    []string{"interpret vulscan output", "find potential vulnerabilities in an nmap scan"},
+	},
+	{
+		Name:        "nmap-pipeline",
+		Command:     "nmap pipeline <file> [-llm] [-issues]",
+		Description: "Full pipeline: analyze + recon + vulscan [+ LLM] [+ issues]",
+		Triggers:    []string{"run the full nmap analysis pipeline", "explain and file issues for nmap findings"},
+	},
+	{
+		Name:        "cve-category",
+		Command:     "cve search <category>",
+		Description: "Search NVD for CVEs by category (xss, sqli, rce, ...), worst-first",
+		Triggers:    []string{"find CVEs for a vulnerability category", "search for XSS or SQL injection CVEs"},
+	},
+	{
+		Name:        "cve-keyword",
+		Command:     "cve keyword <text>",
+		Description: "Free-text CVE search across NVD",
+		Triggers:    []string{"search CVEs by keyword or product name", "look up a CVE by free text"},
+	},
+	{
+		Name:        "cve-scan",
+		Command:     "cve scan <nmap.xml>",
+		Description: "Find CVEs for the software nmap fingerprinted",
+		Triggers:    []string{"find CVEs for the software in an nmap scan", "correlate nmap services with known CVEs"},
+	},
 }
 
-// printAgents lists the available agents.
-func printAgents() { // used by `hackbot agents`
-	fmt.Printf("%d agents:\n", len(agents)) // headline
-	for _, a := range agents {              // one row per agent
-		fmt.Printf("  %-14s %-40s %s\n", a.Name, a.Command, a.Description)
+// Markers delimit the generated agent listings inside the docs, so a test can
+// verify they stay in sync with the registry above. Keep these strings in sync
+// with docs/agents.md and README.md.
+const (
+	agentTableBegin = "<!-- BEGIN AGENTS TABLE (generated by `hackbot agents -format markdown`) -->"
+	agentTableEnd   = "<!-- END AGENTS TABLE -->"
+	agentsSnapBegin = "<!-- BEGIN AGENTS (generated by `hackbot agents`) -->"
+	agentsSnapEnd   = "<!-- END AGENTS -->"
+)
+
+// agentsText renders the plain-text listing printed by `hackbot agents` and
+// snapshotted in the README.
+func agentsText() string { // keep the README snapshot in sync via the test
+	var b strings.Builder                        // accumulate the listing
+	fmt.Fprintf(&b, "%d agents:\n", len(agents)) // headline count
+	for _, a := range agents {                   // one row per agent
+		fmt.Fprintf(&b, "  %-14s %-40s %s\n", a.Name, a.Command, a.Description)
 	}
+	return b.String() // finished listing
+}
+
+// agentsMarkdown renders the catalog as a Markdown table (used in docs).
+func agentsMarkdown() string { // keep docs/agents.md in sync via the test
+	var b strings.Builder                                 // accumulate the table
+	b.WriteString("| Agent | Command | What it does |\n") // header row
+	b.WriteString("| --- | --- | --- |\n")                // separator row
+	for _, a := range agents {                            // one table row per agent
+		fmt.Fprintf(&b, "| `%s` | `hackbot %s` | %s |\n", a.Name, a.Command, a.Description)
+	}
+	return b.String() // finished table
+}
+
+// agentsJSON renders the registry as indented JSON.
+func agentsJSON() (string, error) { // used by `-format json`
+	data, err := json.MarshalIndent(agents, "", "  ") // pretty-print the registry
+	if err != nil {                                   // practically unreachable, but handle it
+		return "", err
+	}
+	return string(data) + "\n", nil // trailing newline for shells
+}
+
+// agentSkill renders an OpenCode SKILL.md scaffold for one agent.
+//
+// Skills are built later; this scaffold captures the name, description,
+// triggers, and command so authoring is mostly filling in examples and notes.
+func agentSkill(a agentInfo) string { // used by `agents -format skill -name <agent>`
+	var b strings.Builder                                                                     // accumulate the scaffold
+	fmt.Fprintf(&b, "---\nname: %s\ndescription: %s. Use when the user asks to %s.\n---\n\n", // YAML frontmatter
+		a.Name, a.Description, strings.Join(a.Triggers, "; "))
+	fmt.Fprintf(&b, "# %s\n\n%s\n\n", a.Name, a.Description)                 // title + summary
+	fmt.Fprintf(&b, "## Command\n\n```bash\nhackbot %s\n```\n\n", a.Command) // canonical invocation
+	b.WriteString("## Notes\n\n")                                            // authoring checklist
+	b.WriteString("- TODO: document inputs, outputs, and when NOT to use this agent.\n")
+	b.WriteString("- TODO: add worked examples against `internal/nmap/testdata/sample.xml`.\n")
+	b.WriteString("- Scanning requires `enable_scan=true` and a target inside `allowed_targets`; issue filing defaults to dry-run.\n")
+	return b.String() // finished scaffold
+}
+
+// agentNames returns the registered agent names, comma-separated.
+func agentNames() string { // used in error messages
+	names := make([]string, 0, len(agents)) // accumulator
+	for _, a := range agents {              // collect names in registry order
+		names = append(names, a.Name)
+	}
+	return strings.Join(names, ", ") // "a, b, c"
+}
+
+// findAgent looks up an agent by name (case-insensitive).
+func findAgent(name string) (agentInfo, bool) { // used by `-format skill`
+	for _, a := range agents { // linear scan (tiny N)
+		if strings.EqualFold(a.Name, strings.TrimSpace(name)) {
+			return a, true
+		}
+	}
+	return agentInfo{}, false // not found
+}
+
+// printAgents lists the available agents in the requested format.
+func printAgents(format, name string) error { // used by `hackbot agents`
+	switch strings.ToLower(strings.TrimSpace(format)) { // normalize the format
+	case "", "text": // default human listing
+		fmt.Print(agentsText())
+	case "markdown", "md": // docs table
+		fmt.Print(agentsMarkdown())
+	case "json": // machine-readable registry
+		s, err := agentsJSON()
+		if err != nil {
+			return err
+		}
+		fmt.Print(s)
+	case "skill": // SKILL.md scaffold for one agent
+		if strings.TrimSpace(name) == "" { // need a target agent...
+			return fmt.Errorf("agents: -format skill needs -name <agent> (one of: %s)", agentNames())
+		}
+		a, ok := findAgent(name) // look it up
+		if !ok {                 // unknown agent...
+			return fmt.Errorf("agents: unknown agent %q (one of: %s)", name, agentNames())
+		}
+		fmt.Print(agentSkill(a)) // print the scaffold
+	default: // unknown format
+		return fmt.Errorf("agents: unknown -format %q (text|markdown|json|skill)", format)
+	}
+	return nil // success
 }
 
 // printScan prints a human summary of a parsed scan.

@@ -2,7 +2,9 @@ package main // tests the unexported CLI helpers directly
 
 import ( // test imports
 	"flag"          // construct a FlagSet to exercise reorderArgs
+	"os"            // read docs/README for the generated-agent sync test
 	"path/filepath" // platform-independent expected vulscan paths
+	"strings"       // string checks for agent rendering
 	"testing"       // the testing framework
 
 	"github.com/rjwashi/hackbot/internal/nmap" // Severity type for parseSeverity tests
@@ -122,14 +124,110 @@ func TestVulscanHelpers(t *testing.T) { // vulscan wiring helpers
 	}
 }
 
-// TestAgentsRegistry verifies the agent listing is populated and complete.
+// TestAgentsRegistry verifies the agent registry is populated and complete.
 func TestAgentsRegistry(t *testing.T) { // `hackbot agents`
 	if len(agents) == 0 {
 		t.Fatal("no agents registered")
 	}
-	for _, a := range agents { // every row needs all three columns
+	seen := map[string]bool{}  // detect duplicate names (skills need unique ids)
+	for _, a := range agents { // every row needs all fields
 		if a.Name == "" || a.Command == "" || a.Description == "" {
 			t.Errorf("incomplete agent: %+v", a)
 		}
+		if len(a.Triggers) == 0 { // triggers seed the future skill description
+			t.Errorf("agent %q has no triggers", a.Name)
+		}
+		if seen[a.Name] { // names double as skill ids, so they must be unique
+			t.Errorf("duplicate agent name %q", a.Name)
+		}
+		seen[a.Name] = true // remember
 	}
+}
+
+// TestAgentsRenderers verifies the text/markdown/json/skill outputs.
+func TestAgentsRenderers(t *testing.T) { // `hackbot agents -format ...`
+	text := agentsText()                         // text listing
+	if !strings.HasPrefix(text, "7 agents:\n") { // headline includes the count
+		t.Errorf("agentsText headline = %q", strings.SplitN(text, "\n", 2)[0])
+	}
+	for _, a := range agents { // every agent appears in the text listing
+		if !strings.Contains(text, a.Name) {
+			t.Errorf("agentsText missing %q", a.Name)
+		}
+	}
+	md := agentsMarkdown()                                           // markdown table
+	if !strings.Contains(md, "| Agent | Command | What it does |") { // header present
+		t.Error("agentsMarkdown missing header")
+	}
+	if strings.Count(md, "\n") != len(agents)+2 { // header + separator + one row per agent
+		t.Errorf("agentsMarkdown rows = %d, want %d", strings.Count(md, "\n"), len(agents)+2)
+	}
+	js, err := agentsJSON() // JSON registry
+	if err != nil {
+		t.Fatalf("agentsJSON: %v", err)
+	}
+	if !strings.Contains(js, `"name": "nmap-analyze"`) { // serializes fields
+		t.Errorf("agentsJSON = %s", js)
+	}
+	skill := agentSkill(agents[0])                                                                                // skill scaffold
+	for _, want := range []string{"---\nname: " + agents[0].Name, "## Command", "hackbot " + agents[0].Command} { // frontmatter + command
+		if !strings.Contains(skill, want) {
+			t.Errorf("agentSkill missing %q", want)
+		}
+	}
+	if err := printAgents("skill", "does-not-exist"); err == nil { // unknown agent errors
+		t.Error("expected error for unknown skill agent")
+	}
+	if err := printAgents("nonsense", ""); err == nil { // unknown format errors
+		t.Error("expected error for unknown format")
+	}
+}
+
+// TestAgentsDocsInSync fails if the generated agent listings drift from the docs.
+//
+// The registry in main.go is the single source of truth; the Markdown table in
+// docs/agents.md and the snapshot in README.md are generated from it. When you
+// add an agent, update both files between the markers so this test stays green.
+func TestAgentsDocsInSync(t *testing.T) { // guards against stale docs
+	md := extractBetween(t, filepath.Join("docs", "agents.md"), agentTableBegin, agentTableEnd) // docs table
+	if want := strings.TrimRight(agentsMarkdown(), "\n"); md != want {                          // must match the generator
+		t.Errorf("docs/agents.md table is stale\n--- want ---\n%s\n--- got ---\n%s", want, md)
+	}
+	readme := extractBetween(t, filepath.Join("README.md"), agentsSnapBegin, agentsSnapEnd) // README snapshot
+	if want := strings.TrimRight(agentsText(), "\n"); stripCodeFence(readme) != want {      // fenced text must match
+		t.Errorf("README.md snapshot is stale\n--- want ---\n%s\n--- got ---\n%s", want, readme)
+	}
+}
+
+// extractBetween returns the text between two markers in a file, normalized to
+// LF and trimmed of surrounding newlines.
+func extractBetween(t *testing.T, path, begin, end string) string { // test helper
+	t.Helper() // cleaner failures
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	s := strings.ReplaceAll(string(data), "\r\n", "\n") // normalize line endings
+	i := strings.Index(s, begin)                        // locate the start marker
+	if i < 0 {
+		t.Fatalf("%s: missing begin marker %q", path, begin)
+	}
+	rest := s[i+len(begin):]      // text after the start marker
+	j := strings.Index(rest, end) // locate the end marker
+	if j < 0 {
+		t.Fatalf("%s: missing end marker %q", path, end)
+	}
+	return strings.Trim(rest[:j], "\n") // between the markers
+}
+
+// stripCodeFence removes a surrounding ``` fence (and optional language) from s.
+func stripCodeFence(s string) string { // test helper for the README snapshot
+	lines := strings.Split(s, "\n") // split into lines
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+		lines = lines[1:] // drop the opening fence
+	}
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+		lines = lines[:len(lines)-1] // drop the closing fence
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n") // reassemble
 }
