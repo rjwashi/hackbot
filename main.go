@@ -7,6 +7,7 @@ package main // package main makes this an executable
 
 import ( // imports for the whole CLI
 	"context"       // background context for one-shot commands
+	"embed"         // embed the WSTG checklist Markdown files
 	"encoding/json" // JSON output for nmap commands
 	"errors"        // errors.Is to special-case canceled contexts
 	"flag"          // stdlib flag parsing for subcommand flags
@@ -16,6 +17,7 @@ import ( // imports for the whole CLI
 	"path/filepath" // join vulscan script paths and walk the repo tree
 	"sort"          // deterministic repo layout ordering
 	"strings"       // arg/severity/string helpers
+	"time"          // web check timeouts
 
 	"github.com/rjwashi/hackbot/internal/agent"   // the pipeline
 	"github.com/rjwashi/hackbot/internal/bot"     // the core bot loop + Python bridge
@@ -24,10 +26,20 @@ import ( // imports for the whole CLI
 	"github.com/rjwashi/hackbot/internal/nmap"    // XML parsing + analysis
 	"github.com/rjwashi/hackbot/internal/scan"    // guarded scanning
 	"github.com/rjwashi/hackbot/internal/vulscan" // vulscan (VulDB) recon agent
+	"github.com/rjwashi/hackbot/internal/wstg"    // WSTG web-security-testing checklists
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev" // default for local builds
+
+// checklistsDir is where the WSTG checklist Markdown files live in the repo.
+const checklistsDir = "src/agent_files" // used by the `web` command
+
+// checklistsFS embeds the WSTG checklist Markdown files so the web-security
+// agents work from any directory without the source tree on disk.
+//
+//go:embed src/agent_files/*.md
+var checklistsFS embed.FS // embedded checklist filesystem
 
 const usage = `hackbot - a Go-first bot with Python helpers
 
@@ -55,9 +67,21 @@ Commands:
   cve keyword <text>        Free-text CVE search
   cve scan <nmap.xml>       Search CVEs for software nmap detected
 
+  web list                  List WSTG web-security-testing categories
+  web show <category>       Show one WSTG category's test checklist
+  web tools [category]      List the free/open-source tools for a category
+  web plan <category>       Map each test to a free tool or manual guidance
+  web run <category> <tgt>  Run guarded checks (dry-run by default)
+
 Common flags:
   -config PATH              Path to a JSON config file (optional)
   -json                     Machine-readable JSON output (nmap commands)
+
+web run flags:
+  -dry-run                  Do not execute tools (default true; pass -dry-run=false)
+  -timeout DURATION         Per-check timeout (default 60s)
+  -scheme SCHEME            URL scheme used to build {url} (default https)
+  -test ID                  Run only one WSTG test id (e.g. WSTG-INJT-05)
 
 nmap scan flags:
   -scripts LIST             NSE scripts to run (default: safe recon set; "none" disables)
@@ -95,7 +119,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap", "cve", "agents", "layout": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -137,6 +161,11 @@ func runCommand(command string, args []string) error { // shared preamble
 	// agents flags.
 	agentFormat := fs.String("format", "text", "agents output format: text|markdown|json|skill") // listing format
 	agentName := fs.String("name", "", "agent name for -format skill")                           // skill target
+
+	// web (WSTG) flags.
+	webTimeout := fs.Duration("timeout", 60*time.Second, "per-check timeout for web run") // bound each tool
+	webScheme := fs.String("scheme", "https", "URL scheme for web run (https|http)")      // target URL scheme
+	webTest := fs.String("test", "", "only run this WSTG test id (web run)")              // single-capability filter
 
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }      // give the flag set our usage text
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil { // parse flags anywhere on the line
@@ -182,6 +211,14 @@ func runCommand(command string, args []string) error { // shared preamble
 			json:     *asJSON,   // JSON output
 			limit:    *limit,    // result cap
 			minScore: *minScore, // score floor
+		})
+	case "web": // WSTG web-security-testing agents
+		return runWeb(cfg, fs.Args(), webFlags{ // pass config + web flags
+			json:    *asJSON,     // JSON output
+			dryRun:  *dryRun,     // dry-run default true (no traffic)
+			timeout: *webTimeout, // per-check timeout
+			scheme:  *webScheme,  // target URL scheme
+			test:    *webTest,    // optional single-test filter
 		})
 	}
 	return nil // unreachable
@@ -423,6 +460,243 @@ func printCVECategories() { // used by `cve categories`
 	}
 }
 
+// webFlags carries the WSTG flags into runWeb.
+//
+// WHY a struct: runWeb grew from a single bool (JSON) into several knobs, and a
+// struct keeps the call site readable and easy to extend without churning the
+// signature again. Alternative considered: pass the *flag.FlagSet directly, but
+// that couples runWeb to CLI parsing and makes it harder to unit test.
+type webFlags struct {
+	json    bool          // emit JSON (machine-readable)
+	dryRun  bool          // render commands but send nothing (SECURITY: default true)
+	timeout time.Duration // per-check timeout (a hung tool must not hang the run)
+	scheme  string        // URL scheme used to build {url} (https by default)
+	test    string        // optional single-test filter for `web run`
+}
+
+// runWeb dispatches the WSTG web-security-testing agents.
+//
+// Subcommands:
+//
+//	web list                    list the 12 categories (default)
+//	web show <category>         print one category's test checklist
+//	web tools [category]        list the free/open-source tools
+//	web plan <category>         map every test to a tool or manual guidance
+//	web run <category> <target> run the automatable checks (guarded, dry-run default)
+//
+// WHY these five verbs: they mirror the user's mental model of the feature —
+// see the checklist, see the free tooling, see the plan, then (carefully) run it.
+// WHY a bare `web <category>` also works: it is the most common thing to type,
+// so accepting it avoids a papercut; it simply forwards to `show`.
+//
+// The category may be a slug (injection), code (WSTG-INJT), human name
+// (Injection), or file name (Injection.md); wstg.Find normalizes all four.
+func runWeb(cfg config.Config, args []string, fl webFlags) error { // used by `hackbot web`
+	checklists, err := wstg.Load(checklistsFS, checklistsDir) // load the embedded checklist files
+	if err != nil {                                           // embedded files should always load
+		return err
+	}
+	sub := "" // the subcommand (lowercased); empty means "list"
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+	switch sub { // dispatch
+	case "", "list": // catalog of categories
+		if fl.json { // JSON mode
+			return printJSON(checklists)
+		}
+		fmt.Print(wstg.List(checklists)) // human catalog
+		return nil
+	case "show": // show one checklist
+		if len(args) < 2 { // need a category...
+			return fmt.Errorf("web show: missing <category> (try: hackbot web list)") // ...else error
+		}
+		return showWebChecklist(checklists, args[1], fl.json) // render it
+	case "tools": // list the free tooling
+		return runWebTools(checklists, args[1:], fl)
+	case "plan": // map tests to tools/manual steps
+		return runWebPlan(checklists, args[1:], fl)
+	case "run": // guarded execution
+		return runWebChecks(cfg, checklists, args[1:], fl)
+	default: // bare category is a convenience for `show`
+		return showWebChecklist(checklists, args[0], fl.json)
+	}
+}
+
+// showWebChecklist prints one category's checklist as text or JSON.
+//
+// WHY this is separate from runWeb: keeping it tiny makes the happy path obvious
+// and lets both `show` and the bare-category shortcut share exactly one code path.
+func showWebChecklist(checklists []wstg.Checklist, query string, asJSON bool) error { // used by `web show`
+	c, ok := wstg.Find(checklists, query) // look up the checklist
+	if !ok {                              // unknown category...
+		return fmt.Errorf("web: unknown category %q (try: hackbot web list)", query) // ...error with a hint
+	}
+	if asJSON { // JSON mode
+		return printJSON(c)
+	}
+	fmt.Print(c.Summary()) // human mode
+	return nil
+}
+
+// runWebTools lists the free tool catalog, or one category's toolset.
+//
+// WHY show the whole catalog by default: a first-time user wants to know what
+// hackbot can drive before picking a category. The per-category view is the
+// focused follow-up. Alternative considered: only expose per-category, but then
+// there is no single place to learn install commands for all tools.
+func runWebTools(checklists []wstg.Checklist, rest []string, fl webFlags) error { // used by `web tools`
+	if len(rest) == 0 { // whole catalog
+		tools := wstg.Tools() // sorted catalog
+		if fl.json {          // JSON mode
+			return printJSON(tools)
+		}
+		fmt.Printf("%d free/open-source tools:\n", len(tools)) // headline
+		for _, t := range tools {                              // one row per tool
+			fmt.Printf("  %-12s %-14s %-16s %s\n", t.Key, t.Name, t.License, t.URL)
+			if t.Install != "" { // install hint, when known
+				fmt.Printf("      install: %s\n", t.Install)
+			}
+		}
+		return nil
+	}
+	c, ok := wstg.Find(checklists, rest[0]) // a category was named
+	if !ok {                                // unknown category...
+		return fmt.Errorf("web tools: unknown category %q (try: hackbot web list)", rest[0])
+	}
+	tools := wstg.ToolsFor(c.Slug) // the curated toolset
+	if fl.json {                   // JSON mode
+		return printJSON(tools)
+	}
+	fmt.Printf("%s (%s): %d free tool(s)\n", c.Category, c.Code, len(tools)) // headline
+	for _, t := range tools {                                                // one row per tool
+		fmt.Printf("  %-12s %-14s %s\n", t.Key, t.Name, t.URL)
+	}
+	fmt.Printf("reference: %s\n", wstg.WSTGBaseURL) // OWASP WSTG (free reference)
+	return nil
+}
+
+// runWebPlan maps every test in a category to a tool or manual guidance.
+//
+// WHY render placeholders (no target): a plan is reference material, not an
+// action. Showing "{url}"/"{host}" keeps it honest about where a target goes and
+// avoids implying traffic was sent. Pass a target to `web run` to fill them in.
+// Alternative considered: require a target for `plan`, but that would make the
+// most useful reference view depend on having a live target.
+func runWebPlan(checklists []wstg.Checklist, rest []string, fl webFlags) error { // used by `web plan`
+	if len(rest) < 1 { // need a category...
+		return fmt.Errorf("web plan: missing <category> (try: hackbot web list)")
+	}
+	c, ok := wstg.Find(checklists, rest[0]) // look up the checklist
+	if !ok {                                // unknown category...
+		return fmt.Errorf("web plan: unknown category %q (try: hackbot web list)", rest[0])
+	}
+	steps := wstg.Plan(c, fl.scheme, "") // render with placeholders (no target yet)
+	if fl.json {                         // JSON mode
+		return printJSON(steps)
+	}
+	auto := 0                 // count automated capabilities
+	for _, s := range steps { // tally
+		if s.Automated {
+			auto++
+		}
+	}
+	fmt.Printf("%s (%s): %d tests, %d automated\n", c.Category, c.Code, len(steps), auto) // headline
+	for _, s := range steps {                                                             // one step per test
+		if s.Automated { // automated: show the tool + command template
+			fmt.Printf("  [auto] %-13s %-44s %s\n", s.TestID, s.Name, s.Command)
+			continue
+		}
+		fmt.Printf("  [man ] %-13s %-44s %s\n", s.TestID, s.Name, s.Manual) // manual: show guidance
+	}
+	return nil
+}
+
+// runWebChecks runs a category's automatable checks against a target.
+//
+// SECURITY: real execution requires the same two gates as nmap scanning
+// (enable_scan plus an allowed_targets match). We check them here as well as in
+// the runner so the CLI can print a precise, actionable message; the runner
+// still enforces them as the authoritative guard, so a caller that bypasses the
+// CLI cannot skip safety. WHY not gate dry-run too: a dry-run sends nothing, so
+// requiring configuration first would block the most useful "what would you do?"
+// preview. The banner makes the dry-run state explicit so it can't be confused
+// with a real run.
+func runWebChecks(cfg config.Config, checklists []wstg.Checklist, rest []string, fl webFlags) error { // used by `web run`
+	if len(rest) < 2 { // need a category and a target...
+		return fmt.Errorf("web run: usage: web run <category> <target> (dry-run by default)")
+	}
+	c, ok := wstg.Find(checklists, rest[0]) // look up the category
+	if !ok {                                // unknown category...
+		return fmt.Errorf("web run: unknown category %q (try: hackbot web list)", rest[0])
+	}
+	target := rest[1]                     // the target (IP or CIDR in the allowlist)
+	checks := wstg.ChecksFor(c.Slug)      // automatable capabilities
+	if strings.TrimSpace(fl.test) != "" { // -test narrows to one test id...
+		checks = nil                                   // ...reset the list
+		for _, ck := range wstg.CheckByTest(fl.test) { // and keep only matching checks in this category
+			if ck.Slug == c.Slug {
+				checks = append(checks, ck)
+			}
+		}
+	}
+	if len(checks) == 0 { // nothing automatable here...
+		return fmt.Errorf("web run: no automated checks for %s (see: hackbot web plan %s)", c.Slug, c.Slug)
+	}
+	if !fl.dryRun { // REAL runs enforce the safety gates up front for a clear message
+		if !cfg.EnableScan { // master switch?
+			return fmt.Errorf("web run: %w", wstg.ErrWebDisabled) // explain how to enable
+		}
+		if !scan.InScope(target, cfg.AllowedTargets) { // allowlist?
+			return fmt.Errorf("web run: target %q is not in allowed_targets; refusing to run", target) // refuse
+		}
+	}
+	names := map[string]string{} // test id -> name, for reporting
+	for _, t := range c.Tests {  // index the checklist names
+		names[t.ID] = t.Name
+	}
+	runner := wstg.NewRunner(wstg.RunnerOptions{ // assemble the guarded runner
+		Enable:         cfg.EnableScan,                                            // master switch
+		AllowedTargets: cfg.AllowedTargets,                                        // allowlist
+		DryRun:         fl.dryRun,                                                 // dry-run default true
+		Timeout:        fl.timeout,                                                // per-check timeout
+		Scheme:         fl.scheme,                                                 // URL scheme
+		Log:            func(s string) { fmt.Fprintln(os.Stderr, "hackbot:", s) }, // progress to stderr
+	})
+	results := runner.RunChecks(context.Background(), checks, func(ck wstg.Check) string { return names[ck.TestID] }, target)
+	if fl.json { // JSON mode
+		return printJSON(results)
+	}
+	if fl.dryRun { // make the safety state explicit
+		fmt.Println("dry-run: no traffic sent (pass -dry-run=false to execute)")
+	}
+	okCount := 0 // tally successes
+	for _, r := range results {
+		status := "ok" // default label
+		switch {       // choose a label
+		case r.DryRun: // dry-run rows
+			status = "dry"
+		case !r.OK: // failures
+			status = "error"
+		default: // successes
+			okCount++
+		}
+		fmt.Printf("  [%s] %-13s %s\n", status, r.TestID, r.Command) // one line per check
+		if r.Output != "" {                                          // show captured output, indented
+			for _, line := range strings.Split(r.Output, "\n") { // line by line
+				fmt.Printf("      %s\n", line)
+			}
+		}
+		if r.Error != "" { // show tool errors
+			fmt.Printf("      error: %s\n", r.Error)
+		}
+	}
+	if !fl.dryRun { // summarize real runs
+		fmt.Printf("%d/%d check(s) completed without error\n", okCount, len(results))
+	}
+	return nil
+}
+
 // vulscanScriptPath returns the NSE script path/name for vulscan.
 //
 // When VulscanDir is configured we point nmap at the script file directly;
@@ -513,6 +787,80 @@ var agents = []agentInfo{ // listed by `hackbot agents`
 		Description: "Find CVEs for the software nmap fingerprinted",
 		Triggers:    []string{"find CVEs for the software in an nmap scan", "correlate nmap services with known CVEs"},
 	},
+	// Web Security Testing (OWASP WSTG) agents. One per checklist file under
+	// src/agent_files/; a test fails if a checklist has no matching agent.
+	{
+		Name:        "web-information-gathering",
+		Command:     "web show information-gathering",
+		Description: "OWASP WSTG information gathering checklist (WSTG-INFO)",
+		Triggers:    []string{"run the web information gathering checklist", "enumerate a web app's attack surface"},
+	},
+	{
+		Name:        "web-config-management",
+		Command:     "web show config-management",
+		Description: "OWASP WSTG configuration/deployment testing checklist (WSTG-CONF)",
+		Triggers:    []string{"run the web configuration testing checklist", "check security headers and platform configuration"},
+	},
+	{
+		Name:        "web-identity-management",
+		Command:     "web show identity-management",
+		Description: "OWASP WSTG identity management checklist (WSTG-IDNT)",
+		Triggers:    []string{"run the identity management testing checklist", "review registration and account provisioning"},
+	},
+	{
+		Name:        "web-authentication",
+		Command:     "web show authentication",
+		Description: "OWASP WSTG authentication testing checklist (WSTG-ATHN)",
+		Triggers:    []string{"run the authentication testing checklist", "test login and credential handling"},
+	},
+	{
+		Name:        "web-authorization",
+		Command:     "web show authorization",
+		Description: "OWASP WSTG authorization testing checklist (WSTG-ATHZ)",
+		Triggers:    []string{"run the authorization testing checklist", "test access control and IDOR"},
+	},
+	{
+		Name:        "web-session-management",
+		Command:     "web show session-management",
+		Description: "OWASP WSTG session management checklist (WSTG-SESS)",
+		Triggers:    []string{"run the session management testing checklist", "test cookies, sessions, and CSRF"},
+	},
+	{
+		Name:        "web-injection",
+		Command:     "web show injection",
+		Description: "OWASP WSTG injection testing checklist (WSTG-INJT)",
+		Triggers:    []string{"run the injection testing checklist", "test for XSS, SQLi, and other injection flaws"},
+	},
+	{
+		Name:        "web-error-handling",
+		Command:     "web show error-handling",
+		Description: "OWASP WSTG error handling testing checklist (WSTG-ERRH)",
+		Triggers:    []string{"run the error handling testing checklist", "check for stack traces and verbose errors"},
+	},
+	{
+		Name:        "web-weak-cryptography",
+		Command:     "web show weak-cryptography",
+		Description: "OWASP WSTG weak cryptography testing checklist (WSTG-CRYP)",
+		Triggers:    []string{"run the weak cryptography testing checklist", "test TLS and cryptographic primitives"},
+	},
+	{
+		Name:        "web-business-logic",
+		Command:     "web show business-logic",
+		Description: "OWASP WSTG business logic testing checklist (WSTG-BUSL)",
+		Triggers:    []string{"run the business logic testing checklist", "test workflows and abuse cases"},
+	},
+	{
+		Name:        "web-client-side",
+		Command:     "web show client-side",
+		Description: "OWASP WSTG client-side testing checklist (WSTG-CLNT)",
+		Triggers:    []string{"run the client-side testing checklist", "test DOM XSS and browser storage"},
+	},
+	{
+		Name:        "web-api-testing",
+		Command:     "web show api-testing",
+		Description: "OWASP WSTG API testing checklist (WSTG-APIT)",
+		Triggers:    []string{"run the API testing checklist", "test REST and GraphQL APIs"},
+	},
 }
 
 // Markers delimit the generated agent listings inside the docs, so a test can
@@ -533,7 +881,7 @@ func agentsText() string { // keep the README snapshot in sync via the test
 	var b strings.Builder                        // accumulate the listing
 	fmt.Fprintf(&b, "%d agents:\n", len(agents)) // headline count
 	for _, a := range agents {                   // one row per agent
-		fmt.Fprintf(&b, "  %-14s %-40s %s\n", a.Name, a.Command, a.Description)
+		fmt.Fprintf(&b, "  %-26s %-40s %s\n", a.Name, a.Command, a.Description)
 	}
 	return b.String() // finished listing
 }

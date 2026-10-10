@@ -19,11 +19,45 @@ in sync).
 | `cve-category` | `hackbot cve search <category>` | Search NVD for CVEs by category (xss, sqli, rce, ...), worst-first |
 | `cve-keyword` | `hackbot cve keyword <text>` | Free-text CVE search across NVD |
 | `cve-scan` | `hackbot cve scan <nmap.xml>` | Find CVEs for the software nmap fingerprinted |
+| `web-information-gathering` | `hackbot web show information-gathering` | OWASP WSTG information gathering checklist (WSTG-INFO) |
+| `web-config-management` | `hackbot web show config-management` | OWASP WSTG configuration/deployment testing checklist (WSTG-CONF) |
+| `web-identity-management` | `hackbot web show identity-management` | OWASP WSTG identity management checklist (WSTG-IDNT) |
+| `web-authentication` | `hackbot web show authentication` | OWASP WSTG authentication testing checklist (WSTG-ATHN) |
+| `web-authorization` | `hackbot web show authorization` | OWASP WSTG authorization testing checklist (WSTG-ATHZ) |
+| `web-session-management` | `hackbot web show session-management` | OWASP WSTG session management checklist (WSTG-SESS) |
+| `web-injection` | `hackbot web show injection` | OWASP WSTG injection testing checklist (WSTG-INJT) |
+| `web-error-handling` | `hackbot web show error-handling` | OWASP WSTG error handling testing checklist (WSTG-ERRH) |
+| `web-weak-cryptography` | `hackbot web show weak-cryptography` | OWASP WSTG weak cryptography testing checklist (WSTG-CRYP) |
+| `web-business-logic` | `hackbot web show business-logic` | OWASP WSTG business logic testing checklist (WSTG-BUSL) |
+| `web-client-side` | `hackbot web show client-side` | OWASP WSTG client-side testing checklist (WSTG-CLNT) |
+| `web-api-testing` | `hackbot web show api-testing` | OWASP WSTG API testing checklist (WSTG-APIT) |
 <!-- END AGENTS TABLE -->
 
 Underlying packages: `internal/nmap` (parse + analyze + NSE recon),
 `internal/scan` (guarded runner), `internal/vulscan` (VulDB matching),
-`internal/cve` (NVD client/agent), `internal/agent` (pipeline).
+`internal/cve` (NVD client/agent), `internal/wstg` (WSTG checklists),
+`internal/agent` (pipeline).
+
+## Web Security Testing (WSTG) agents
+
+Twelve agents cover the OWASP Web Security Testing Guide, one per checklist file
+under `src/agent_files/`. Each checklist is parsed by `internal/wstg` and
+embedded into the binary (via `go:embed`), so the agents work without the source
+tree on disk. They print the tests for a category and are the groundwork for
+guided web testing (each becomes a skill later, like the others):
+
+```bash
+hackbot web list                  # all 12 categories and their test counts
+hackbot web show injection        # the WSTG-INJT checklist
+hackbot web show WSTG-APIT        # by code; "Injection" or the file name also work
+hackbot web list -json            # machine-readable catalog
+```
+
+`web show` accepts a slug (`injection`), a code (`WSTG-INJT`), a category name
+(`Injection`), or a file name (`Injection.md`). Adding a checklist file under
+`src/agent_files/` requires a matching `web-<slug>` agent;
+`TestWebAgentsCoverChecklists` fails until you add one, and
+`TestChecklistsEmbedded` verifies the embedded files load.
 
 ## Skills
 

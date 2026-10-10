@@ -2,12 +2,14 @@ package main // tests the unexported CLI helpers directly
 
 import ( // test imports
 	"flag"          // construct a FlagSet to exercise reorderArgs
+	"fmt"           // build the expected agents headline dynamically
 	"os"            // read docs/README for the generated-agent sync test
 	"path/filepath" // platform-independent expected vulscan paths
 	"strings"       // string checks for agent rendering
 	"testing"       // the testing framework
 
 	"github.com/rjwashi/hackbot/internal/nmap" // Severity type for parseSeverity tests
+	"github.com/rjwashi/hackbot/internal/wstg" // load the embedded WSTG checklists
 )
 
 // TestReorderArgsFlagsAnywhere verifies flags after positionals are parsed.
@@ -146,8 +148,8 @@ func TestAgentsRegistry(t *testing.T) { // `hackbot agents`
 
 // TestAgentsRenderers verifies the text/markdown/json/skill outputs.
 func TestAgentsRenderers(t *testing.T) { // `hackbot agents -format ...`
-	text := agentsText()                         // text listing
-	if !strings.HasPrefix(text, "7 agents:\n") { // headline includes the count
+	text := agentsText()                                                    // text listing
+	if !strings.HasPrefix(text, fmt.Sprintf("%d agents:\n", len(agents))) { // headline includes the count
 		t.Errorf("agentsText headline = %q", strings.SplitN(text, "\n", 2)[0])
 	}
 	for _, a := range agents { // every agent appears in the text listing
@@ -211,6 +213,50 @@ func TestLayoutDocsInSync(t *testing.T) { // guards the README layout tree
 	}
 	if got := stripCodeFence(readme); got != strings.TrimRight(want, "\n") { // must match
 		t.Errorf("README.md layout is stale\n--- want ---\n%s\n--- got ---\n%s", want, got)
+	}
+}
+
+// TestChecklistsEmbedded verifies the embedded WSTG checklists load correctly.
+func TestChecklistsEmbedded(t *testing.T) { // guards the //go:embed directive
+	checklists, err := wstg.Load(checklistsFS, checklistsDir) // load the embedded files
+	if err != nil {
+		t.Fatalf("load embedded checklists: %v", err)
+	}
+	if len(checklists) != 12 { // the WSTG set has 12 categories
+		t.Fatalf("categories = %d, want 12", len(checklists))
+	}
+	total := 0                     // count every test item
+	for _, c := range checklists { // across all categories
+		total += len(c.Tests)                                 // accumulate
+		if c.Code == "" || c.Category == "" || c.Slug == "" { // each checklist must be complete
+			t.Errorf("incomplete checklist: %+v", c)
+		}
+		if len(c.Tests) == 0 { // and must have at least one test
+			t.Errorf("checklist %s has no tests", c.File)
+		}
+	}
+	if total < 100 { // the WSTG set totals well over 100 items
+		t.Errorf("total tests = %d, want >= 100", total)
+	}
+}
+
+// TestWebAgentsCoverChecklists verifies every WSTG checklist has a matching
+// agent. Add a new file under src/agent_files/ and you must add an agent too.
+func TestWebAgentsCoverChecklists(t *testing.T) { // registry <-> checklists invariant
+	checklists, err := wstg.Load(checklistsFS, checklistsDir) // load the embedded files
+	if err != nil {
+		t.Fatalf("load embedded checklists: %v", err)
+	}
+	for _, c := range checklists { // each checklist needs an agent...
+		name := "web-" + c.Slug  // ...named web-<slug>
+		a, ok := findAgent(name) // look it up
+		if !ok {                 // missing agent...
+			t.Errorf("no agent for checklist %s (expected %q)", c.File, name) // ...fail
+			continue
+		}
+		if want := "web show " + c.Slug; !strings.Contains(a.Command, want) { // command must point at the checklist
+			t.Errorf("agent %s command = %q, want it to contain %q", name, a.Command, want)
+		}
 	}
 }
 
