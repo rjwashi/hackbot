@@ -17,6 +17,7 @@ import ( // imports for the whole CLI
 	"github.com/rjwashi/hackbot/internal/agent"  // the pipeline
 	"github.com/rjwashi/hackbot/internal/bot"    // the core bot loop + Python bridge
 	"github.com/rjwashi/hackbot/internal/config" // configuration loading
+	"github.com/rjwashi/hackbot/internal/cve"    // CVE search (NVD) agent
 	"github.com/rjwashi/hackbot/internal/nmap"   // XML parsing + analysis
 	"github.com/rjwashi/hackbot/internal/scan"   // guarded scanning
 )
@@ -42,6 +43,11 @@ Commands:
   nmap scan    <target>     Run a GUARDED nmap scan, then analyze + recon
   nmap pipeline <file>      Full pipeline: analyze [+ llm] [+ issues]
 
+  cve categories            List CVE search categories
+  cve search <category>     Search NVD for CVEs in a category (xss, sqli, rce, ...)
+  cve keyword <text>        Free-text CVE search
+  cve scan <nmap.xml>       Search CVEs for software nmap detected
+
 Common flags:
   -config PATH              Path to a JSON config file (optional)
   -json                     Machine-readable JSON output (nmap commands)
@@ -58,6 +64,10 @@ nmap pipeline flags:
   -min-severity S           Minimum severity to file (info|low|medium|high|critical)
   -max-issues N             Max issues per run (default 10)
 
+cve flags:
+  -limit N                  Max CVE results to show (default 20)
+  -min-score X              Only CVEs with CVSS >= X
+
 Safety: scanning is disabled unless enable_scan is true AND the target is in
 allowed_targets. Only scan systems you own or are explicitly authorized to test.
 ` // end of usage text
@@ -73,7 +83,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -107,6 +117,10 @@ func runCommand(command string, args []string) error { // shared preamble
 	scripts := fs.String("scripts", "", "NSE scripts for nmap scan (comma list; default recon set)") // recon scripts
 	scriptArgs := fs.String("script-args", "", "extra args for nmap --script-args")                  // script arguments
 
+	// cve (CVE search) flags.
+	limit := fs.Int("limit", 20, "max CVE results to show")              // display cap
+	minScore := fs.Float64("min-score", 0, "minimum CVSS score to show") // score floor
+
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }      // give the flag set our usage text
 	if err := fs.Parse(reorderArgs(fs, args)); err != nil { // parse flags anywhere on the line
 		return err // propagate parse errors
@@ -136,6 +150,12 @@ func runCommand(command string, args []string) error { // shared preamble
 			maxIssues:   *maxIssues,    // cap
 			scripts:     *scripts,      // NSE scripts
 			scriptArgs:  *scriptArgs,   // script args
+		})
+	case "cve": // CVE search subcommands
+		return runCVE(cfg, fs.Args(), cveFlags{ // collect flags
+			json:     *asJSON,   // JSON output
+			limit:    *limit,    // result cap
+			minScore: *minScore, // score floor
 		})
 	}
 	return nil // unreachable
@@ -268,6 +288,91 @@ func runNmap(cfg config.Config, args []string, fl nmapFlags) error { // nmap ent
 
 	default: // unknown subcommand
 		return fmt.Errorf("nmap: unknown subcommand %q", sub)
+	}
+}
+
+// cveFlags carries the CVE-search flags into runCVE.
+type cveFlags struct { // keeps runCVE's signature tidy
+	json     bool    // emit JSON
+	limit    int     // max results to show
+	minScore float64 // minimum CVSS score to show
+}
+
+// runCVE dispatches the categories/search/keyword/scan subcommands.
+func runCVE(cfg config.Config, args []string, fl cveFlags) error { // CVE entry point
+	if len(args) < 1 { // need a subcommand...
+		return fmt.Errorf("cve: missing subcommand (categories|search|keyword|scan)") // ...else error
+	}
+	sub := args[0]   // the subcommand
+	rest := args[1:] // its arguments
+
+	searcher := &cve.NVDClient{BaseURL: cfg.NVDBaseURL, APIKey: cfg.NVDAPIKey} // NVD data source
+	cveAgent := &cve.Agent{                                                    // the search agent
+		Searcher: searcher,                                                  // data source
+		Limit:    fl.limit,                                                  // display cap
+		MinScore: fl.minScore,                                               // score floor
+		Log:      func(s string) { fmt.Fprintln(os.Stderr, "hackbot:", s) }, // progress to stderr
+	}
+	ctx := context.Background() // one-shot command context
+
+	switch sub { // dispatch
+	case "categories": // list the built-in categories
+		printCVECategories()
+		return nil
+
+	case "search": // search one category
+		if len(rest) < 1 { // need a category...
+			return fmt.Errorf("cve search: missing <category> (try: %s)", strings.Join(cve.CategoryNames(), ", "))
+		}
+		rep, err := cveAgent.SearchCategory(ctx, rest[0]) // run the search
+		if err != nil {
+			return err
+		}
+		return emitCVEReport(rep, fl.json) // render
+
+	case "keyword": // free-text search
+		if len(rest) < 1 {
+			return fmt.Errorf("cve keyword: missing <text>")
+		}
+		rep, err := cveAgent.SearchKeyword(ctx, strings.Join(rest, " ")) // join words into one phrase
+		if err != nil {
+			return err
+		}
+		return emitCVEReport(rep, fl.json)
+
+	case "scan": // derive queries from an nmap file
+		if len(rest) < 1 {
+			return fmt.Errorf("cve scan: missing <nmap.xml>")
+		}
+		sc, err := nmap.ParseFile(rest[0]) // parse the scan
+		if err != nil {
+			return err
+		}
+		rep, err := cveAgent.SearchScan(ctx, sc) // search for the detected software
+		if err != nil {
+			return err
+		}
+		return emitCVEReport(rep, fl.json)
+
+	default: // unknown subcommand
+		return fmt.Errorf("cve: unknown subcommand %q", sub)
+	}
+}
+
+// emitCVEReport prints a CVE report as JSON or human text.
+func emitCVEReport(rep *cve.Report, asJSON bool) error { // shared renderer
+	if asJSON { // JSON mode
+		return printJSON(rep)
+	}
+	fmt.Print(rep.Summary()) // human mode
+	return nil
+}
+
+// printCVECategories lists the built-in CVE categories.
+func printCVECategories() { // used by `cve categories`
+	fmt.Printf("%d categories:\n", len(cve.Categories)) // headline
+	for _, c := range cve.Categories {                  // one row per category
+		fmt.Printf("  %-22s %-9s %s\n", c.Name, c.CWE, c.Description) // name, CWE, description
 	}
 }
 

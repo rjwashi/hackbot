@@ -48,6 +48,14 @@ type Config struct { // one struct with JSON tags; env overrides applied after l
 	// GitHubRepo (owner/name) receives auto-filed issues.
 	// Overridable via HACKBOT_GITHUB_REPO.
 	GitHubRepo string `json:"github_repo"` // e.g. "rjwashi/hackbot"
+
+	// ---- CVE search (NVD) ----
+
+	// NVDBaseURL overrides the NVD API endpoint (mirrors/tests).
+	// Overridable via HACKBOT_NVD_BASE_URL.
+	NVDBaseURL string `json:"nvd_base_url"` // default is the public NVD 2.0 endpoint
+	// NVDAPIKey is an optional NIST NVD API key. Overridable via HACKBOT_NVD_API_KEY.
+	NVDAPIKey string `json:"nvd_api_key"` // raises the NVD rate limit when set
 }
 
 // Default returns a Config populated with sensible defaults.
@@ -111,6 +119,12 @@ func Load(path string) (Config, error) { // main constructor
 	}
 	if v := os.Getenv("HACKBOT_GITHUB_REPO"); v != "" { // env override for the issue repo
 		cfg.GitHubRepo = v
+	}
+	if v := os.Getenv("HACKBOT_NVD_BASE_URL"); v != "" { // env override for the NVD endpoint
+		cfg.NVDBaseURL = v
+	}
+	if v := os.Getenv("HACKBOT_NVD_API_KEY"); v != "" { // env override for the NVD key
+		cfg.NVDAPIKey = v
 	}
 
 	return cfg, nil // success

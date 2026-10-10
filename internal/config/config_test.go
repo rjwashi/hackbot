@@ -109,3 +109,16 @@ func TestNmapScriptsEnv(t *testing.T) { // script selection env
 		t.Errorf("NmapScripts = %v, want non-nil empty", cfg.NmapScripts)
 	}
 }
+
+// TestNVDEnv verifies the NVD endpoint/key env overrides.
+func TestNVDEnv(t *testing.T) { // CVE source config
+	t.Setenv("HACKBOT_NVD_BASE_URL", "http://example.test/nvd") // endpoint override
+	t.Setenv("HACKBOT_NVD_API_KEY", "secret")                   // key override
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NVDBaseURL != "http://example.test/nvd" || cfg.NVDAPIKey != "secret" { // both applied
+		t.Errorf("nvd cfg = %+v", cfg)
+	}
+}
