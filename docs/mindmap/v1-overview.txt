@@ -1,0 +1,64 @@
+hackbot  (mind map v1 — overview)
+│
+├── WHAT IT IS
+│   ├── A Go-first bot project with a Python escape hatch
+│   ├── Repo: github.com/rjwashi/hackbot  (public, branch: main)
+│   └── CLI binary: hackbot   (built with: go build -o bin/hackbot.exe .)
+│
+├── WHY (current focus)
+│   └── Turn nmap network scans into prioritized, actionable risk findings
+│
+├── CLI SURFACE  (hackbot <command>)
+│   ├── hello            prints a greeting + config summary
+│   ├── run              runs one bot cycle (loop scaffold)
+│   ├── version          prints build version
+│   ├── help             prints usage
+│   ├── py <helper> …    Go --> Python bridge (escape hatch)
+│   └── nmap <sub>
+│       ├── parse    <file.xml>      list hosts / open ports
+│       ├── analyze  <file.xml>      rule-based risk report
+│       ├── scan     <target>        GUARDED live scan, then analyze
+│       └── pipeline <file.xml>      analyze [-> LLM] [-> issues]
+│             flags: -json  -llm  -issues  -dry-run  -repo  -min-severity  -max-issues
+│
+├── CODE MAP  (internal/)
+│   ├── config/   JSON file + HACKBOT_* env  --> Config struct
+│   ├── bot/      core loop (greet/tick/done) + RunPython()
+│   ├── nmap/     XML parse + rule-based Analyze()  --> []Finding
+│   ├── scan/     guarded nmap runner (CommandRunner seam) + InScope()
+│   └── agent/    pipeline: analyze --> [LLM] --> [issues]; Report
+│
+├── DATA FLOW
+│   ├── (your) nmap -sV -oX scan.xml     ─┐
+│   ├── (guarded) hackbot nmap scan …    ─┴─> nmap.Scan
+│   ├── nmap.Scan  --> nmap.Analyze  --> []Finding (ranked worst-first)
+│   ├── []Finding  --> buildPrompt   --> LLM /chat/completions --> narrative
+│   └── []Finding  --> issueTitle/Body --> gh issue create (dry-run default)
+│
+├── SAFETY MODEL  (network scanning is sensitive)
+│   ├── scanning DISABLED by default            (enable_scan / HACKBOT_ENABLE_SCAN)
+│   ├── allowlist REQUIRED before nmap runs     (allowed_targets; IP/CIDR only)
+│   ├── hostnames refused; scope cannot widen   (subnet-contained rule)
+│   ├── ingestion is the default mode           (parse/analyze/pipeline: no scan)
+│   └── issue creation is DRY-RUN by default    (-dry-run=false to actually file)
+│
+├── CONFIGURATION
+│   ├── file: -config hackbot.json   (see hackbot.example.json)
+│   └── env:  HACKBOT_NAME, HACKBOT_INTERVAL_SECONDS, HACKBOT_PYTHON_CMD,
+│             HACKBOT_ENABLE_SCAN, HACKBOT_ALLOWED_TARGETS, HACKBOT_NMAP_PATH,
+│             HACKBOT_LLM_BASE_URL, HACKBOT_LLM_API_KEY, HACKBOT_LLM_MODEL,
+│             HACKBOT_GITHUB_REPO
+│
+├── QUALITY
+│   ├── Go tests:    nmap, scan, agent, config, bot, main  (table-driven)
+│   ├── Python tests: pytest over pythontools/  (9 passing)
+│   └── CI (.github/workflows/ci.yml): gofmt + vet + build + test -race + pytest
+│
+└── ROADMAP  (tracked as GitHub issues)
+    ├── [ ] #1  define hackbot's first "real" feature
+    └── [ ] #2  nmap agent hardening
+              ├── [ ] more ingest formats (-oG / normal)
+              ├── [ ] pluggable rule sets (YAML/JSON)
+              ├── [ ] CVE enrichment from CPEs
+              ├── [ ] scan-to-scan diffing (newly opened ports)
+              └── [ ] scheduler + change-based alerts
