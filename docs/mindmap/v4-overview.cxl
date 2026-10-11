@@ -106,79 +106,81 @@
                      long-comment="Parses/embeds the WSTG checklists, holds the free-tool catalog and curated checks, and runs them under guard."/>
             <concept id="c41" label="ops/ (+ runner.go, recon.go, discovery.go, secrets.go, deps.go)"
                      long-comment="The general capability engine: Tool/Task/Catalog + a guarded Runner + Chains. recon, discover, secrets, and deps are just catalogs on top; the Kind (host vs path) chooses which allowlist applies, and CheckScope is the one shared gate."/>
-            <concept id="c42" label="skillsec/ (skillsec.go, rules.go, run.go)"
+            <concept id="c42" label="logic/ (logic.go, probes.go, run.go)"
+                     long-comment="Core evaluation logic: probe definitions, rule execution, and the run coordinator that ties probes to targets."/>
+            <concept id="c43" label="skillsec/ (skillsec.go, rules.go, run.go)"
                      long-comment="Parses the skill-security rubrics from src/agent_files/ (auto-detects the WSTG-style table format and skips the WSTG files in the same directory), holds the probe catalog (search/exec/manual probes over a free tool catalog), and runs them under the same ops.CheckScope gate with dry-run as the default. Search probes use rg → grep → an in-process Go scanner, so a bare machine still gets a real answer."/>
-            <concept id="c43" label="DATA FLOW"
+            <concept id="c44" label="DATA FLOW"
                      long-comment="How data becomes findings. &#x27;→&#x27; marks transformation; [ ] marks optional stages."/>
-            <concept id="c44" label="nmap XML (or guarded scan) → parse → analyze → []Finding"
+            <concept id="c45" label="nmap XML (or guarded scan) → parse → analyze → []Finding"
                      long-comment="Either you produce the XML yourself, or hackbot runs a guarded scan; both funnel into the same parser so downstream stages don&#x27;t care about the source."/>
-            <concept id="c45" label="[]Finding → [LLM narrative] → [GitHub issues, dry-run]"
+            <concept id="c46" label="[]Finding → [LLM narrative] → [GitHub issues, dry-run]"
                      long-comment="The optional LLM turns ranked findings into prose; issue filing is dry-run until explicitly enabled with -dry-run=false."/>
-            <concept id="c46" label="WSTG checklist → capability (test→tool) → plan / guarded run"
+            <concept id="c47" label="WSTG checklist → capability (test→tool) → plan / guarded run"
                      long-comment="The checklist supplies the tests; the capability layer supplies the commands; the runner supplies the safety."/>
-            <concept id="c47" label="domain → recon task → tool stdout"
+            <concept id="c48" label="domain → recon task → tool stdout"
                      long-comment="e.g. subfinder -d &lt;domain&gt; -&gt; lines of subdomains. Output is evidence, not a verdict."/>
-            <concept id="c48" label="URL → discovery task → ffuf/gobuster stdout"
+            <concept id="c49" label="URL → discovery task → ffuf/gobuster stdout"
                      long-comment="e.g. ffuf -u &lt;url&gt;/FUZZ -&gt; discovered paths. Noisy by nature, hence guarded."/>
-            <concept id="c49" label="task stdout —(OS pipe, no shell)→ next task stdin"
+            <concept id="c50" label="task stdout —(OS pipe, no shell)→ next task stdin"
                      long-comment="The chain layer (ops.RunChain + scan.StdinRunner) connects steps with a real pipe, so target-derived data never becomes a shell fragment. Stops at the first failing step."/>
-            <concept id="c50" label="local path → secret task → gitleaks/trufflehog findings"
+            <concept id="c51" label="local path → secret task → gitleaks/trufflehog findings"
                      long-comment="Reads files only (verify may contact the issuing service). Output is raw tool evidence, not a verdict, so the operator triages."/>
-            <concept id="c51" label="local project → SCA/SBOM task → CVEs or CycloneDX"
+            <concept id="c52" label="local project → SCA/SBOM task → CVEs or CycloneDX"
                      long-comment="trivy/grype/osv-scanner emit ranked vulnerabilities; syft emits an SBOM. The databases are downloaded, so only the scanned files are local."/>
-            <concept id="c52" label="skill directory → rubric check → probes → verdict + evidence"
+            <concept id="c53" label="skill directory → rubric check → probes → verdict + evidence"
                      long-comment="Each rubric check maps to one or more probes: search probes grep the skill&#x27;s files, exec probes run tools (git/semgrep/gitleaks), manual probes stay human guidance. Verdicts aggregate with FAIL &gt; ERROR &gt; REVIEW &gt; MANUAL &gt; PASS &gt; SKIP precedence and carry line-numbered evidence, plus a note listing which tools were missing so the operator knows what did not run."/>
-            <concept id="c53" label="SAFETY MODEL"
+            <concept id="c54" label="SAFETY MODEL"
                      long-comment="The rules that make a dual-use tool safe to ship. Every family must obey all of them."/>
-            <concept id="c54" label="execution is DISABLED by default (enable_scan)"
+            <concept id="c55" label="execution is DISABLED by default (enable_scan)"
                      long-comment="Nothing runs (network or local) until enable_scan / HACKBOT_ENABLE_SCAN is set. Alternative rejected: &#x27;read-only is always safe&#x27; is false once a tool can clone remote repos."/>
-            <concept id="c55" label="an allowlist is REQUIRED (allowed_targets IP/CIDR; allowed_domains names; allowed_paths local dirs)"
+            <concept id="c56" label="an allowlist is REQUIRED (allowed_targets IP/CIDR; allowed_domains names; allowed_paths local dirs)"
                      long-comment="A target must be inside the relevant allowlist before a real run, chosen by the catalog&#x27;s Kind: host catalogs use allowed_targets/allowed_domains, path catalogs (secrets/deps) use allowed_paths. IPs and domains are separate lists because allowing a CIDR is not consent to hit every domain that resolves into it, and an allowed path root does not admit a sibling with a shared name prefix."/>
-            <concept id="c56" label="actions are DRY-RUN by default (web run, recon, discover, secrets, deps, skill run, issues)"
+            <concept id="c57" label="actions are DRY-RUN by default (web run, recon, discover, secrets, deps, skill run, issues)"
                      long-comment="The default is to render the exact command and run nothing. You opt in with -dry-run=false. This makes the safe path also the informative path."/>
-            <concept id="c57" label="ingestion is the default mode"
+            <concept id="c58" label="ingestion is the default mode"
                      long-comment="parse/analyze/recon/vulscan/pipeline and all web/plan commands read data and never scan, so the tool is useful with zero scanning enabled."/>
-            <concept id="c58" label="fixed argument templates (targets are never shell-interpolated)"
+            <concept id="c59" label="fixed argument templates (targets are never shell-interpolated)"
                      long-comment="Commands are stored as argv arrays with placeholders; the target becomes one argv element, never a shell fragment. This removes an entire class of injection bugs."/>
-            <concept id="c59" label="the runner is the authoritative gate (ops.CheckScope)"
+            <concept id="c60" label="the runner is the authoritative gate (ops.CheckScope)"
                      long-comment="The CLI pre-checks for a friendly message, but the runner re-checks enable + scope itself via one shared gate, so a new caller cannot bypass the guards by forgetting them."/>
-            <concept id="c60" label="CONFIGURATION"
+            <concept id="c61" label="CONFIGURATION"
                      long-comment="One optional JSON file, overridable by environment. Env wins so CI/hosted runs need no file."/>
-            <concept id="c61" label="-config hackbot.json (see hackbot.example.json)"
+            <concept id="c62" label="-config hackbot.json (see hackbot.example.json)"
                      long-comment="The example file documents every key; absent file means defaults (scanning off)."/>
-            <concept id="c62" label="HACKBOT_* env vars override the file"
+            <concept id="c63" label="HACKBOT_* env vars override the file"
                      long-comment="Same values, deployable without shipping a file. Truthy parsing accepts 1/true/yes/on."/>
-            <concept id="c63" label="allowed_domains, allowed_paths, wordlist (recon/discover/secrets/deps)"
+            <concept id="c64" label="allowed_domains, allowed_paths, wordlist (recon/discover/secrets/deps)"
                      long-comment="allowed_domains gates name-based recon; allowed_paths gates local secrets/deps scans (empty means the cwd); wordlist feeds content discovery (defaults to the free SecLists common list)."/>
-            <concept id="c64" label="QUALITY"
+            <concept id="c65" label="QUALITY"
                      long-comment="How correctness is protected as the project grows."/>
-            <concept id="c65" label="Go tests per package (table-driven)"
+            <concept id="c66" label="Go tests per package (table-driven)"
                      long-comment="Each package carries focused tests; the safety-critical paths (scope, runner gates) are tested with fakes so they run with no network and no tools installed."/>
-            <concept id="c66" label="Python tests (pytest over pythontools/)"
+            <concept id="c67" label="Python tests (pytest over pythontools/)"
                      long-comment="The escape-hatch helpers are tested too, since they run in the same product."/>
-            <concept id="c67" label="CI: gofmt + vet + build + test -race + pytest"
+            <concept id="c68" label="CI: gofmt + vet + build + test -race + pytest"
                      long-comment="Formatting, vetting, race testing, and the Python suite all gate every push/PR."/>
-            <concept id="c68" label="drift tests keep registry, docs, and catalogs in sync"
+            <concept id="c69" label="drift tests keep registry, docs, and catalogs in sync"
                      long-comment="Adding a checklist/agent without updating docs fails the build. This is why the generated tables in the README and docs never rot."/>
-            <concept id="c69" label="ROADMAP"
+            <concept id="c70" label="ROADMAP"
                      long-comment="Planned next steps. &#x27;[ ]&#x27; marks not-done; these mirror the recommendations in docs/agents.md."/>
-            <concept id="c70" label="[ ] cloud posture (prowler)"
+            <concept id="c71" label="[ ] cloud posture (prowler)"
                      long-comment="Cloud account auditing. Needs a cloud-account allowlist and credentials, so it gets its own careful gate."/>
-            <concept id="c71" label="[ ] recon → discover chaining"
+            <concept id="c72" label="[ ] recon → discover chaining"
                      long-comment="Feed recon http/live-host output into discovery so one allowlisted seed expands into a full footprint, beyond the shipped subdomains→httpx chain."/>
-            <concept id="c72" label="[ ] generate OpenCode skills from agents"
+            <concept id="c73" label="[ ] generate OpenCode skills from agents"
                      long-comment="Each registry entry is already skill-shaped; &#x27;hackbot agents -format skill&#x27; scaffolds them."/>
-            <concept id="c73" label="[ ] vulscan → NVD enrichment; EPSS/KEV; SARIF/CycloneDX"
+            <concept id="c74" label="[ ] vulscan → NVD enrichment; EPSS/KEV; SARIF/CycloneDX"
                      long-comment="Attach CVSS/EPSS/KEV to vulscan CVEs, rank by exploitation likelihood, and export CI-friendly formats."/>
-            <concept id="c74" label="[ ] evaluate published skill corpora (quarantined/malicious samples)"
+            <concept id="c75" label="[ ] evaluate published skill corpora (quarantined/malicious samples)"
                      long-comment="Run the full trio of rubrics over known-good and known-malicious skill samples (e.g. quarantined ClawHub-style bundles) and publish a sample report so the skill evaluator&#x27;s verdicts are demonstrably calibrated."/>
-            <concept id="c75" label="MIND MAP META"
+            <concept id="c76" label="MIND MAP META"
                      long-comment="How to read and maintain this map."/>
-            <concept id="c76" label="CXL (CmapTools) is the map of record; .txt mirrors it"
+            <concept id="c77" label="CXL (CmapTools) is the map of record; .txt mirrors it"
                      long-comment="Edges are propositions: concept -&gt; linking phrase -&gt; concept. Open the .cxl in CmapTools (File -&gt; Open)."/>
-            <concept id="c77" label="long-comments explain the &#x27;why&#x27; and the rejected alternatives"
+            <concept id="c78" label="long-comments explain the &#x27;why&#x27; and the rejected alternatives"
                      long-comment="Most concepts carry a long-comment explaining the reasoning, not just the label, so the map teaches the design."/>
-            <concept id="c78" label="one version per milestone; older versions stay for history"
+            <concept id="c79" label="one version per milestone; older versions stay for history"
                      long-comment="v1 captured the nmap milestone; v2 the five-family project; v3 adds secrets + deps and the footprint chain; v4 adds the skill-security rubric family. A future final-annotated pass can expand every concept for a newcomer."/>
         </concept-list>
 
@@ -225,42 +227,43 @@
             <linking-phrase id="l39" label="contains"/>
             <linking-phrase id="l40" label="contains"/>
             <linking-phrase id="l41" label="contains"/>
-            <linking-phrase id="l42" label="processes"/>
-            <linking-phrase id="l43" label="starts from"/>
-            <linking-phrase id="l44" label="becomes"/>
-            <linking-phrase id="l45" label="includes"/>
+            <linking-phrase id="l42" label="contains"/>
+            <linking-phrase id="l43" label="processes"/>
+            <linking-phrase id="l44" label="starts from"/>
+            <linking-phrase id="l45" label="becomes"/>
             <linking-phrase id="l46" label="includes"/>
             <linking-phrase id="l47" label="includes"/>
             <linking-phrase id="l48" label="includes"/>
             <linking-phrase id="l49" label="includes"/>
             <linking-phrase id="l50" label="includes"/>
             <linking-phrase id="l51" label="includes"/>
-            <linking-phrase id="l52" label="is constrained by"/>
-            <linking-phrase id="l53" label="defaults to"/>
-            <linking-phrase id="l54" label="requires"/>
-            <linking-phrase id="l55" label="defaults to"/>
-            <linking-phrase id="l56" label="prefers"/>
-            <linking-phrase id="l57" label="enforces"/>
-            <linking-phrase id="l58" label="guaranteed by"/>
-            <linking-phrase id="l59" label="is set by"/>
-            <linking-phrase id="l60" label="via"/>
+            <linking-phrase id="l52" label="includes"/>
+            <linking-phrase id="l53" label="is constrained by"/>
+            <linking-phrase id="l54" label="defaults to"/>
+            <linking-phrase id="l55" label="requires"/>
+            <linking-phrase id="l56" label="defaults to"/>
+            <linking-phrase id="l57" label="prefers"/>
+            <linking-phrase id="l58" label="enforces"/>
+            <linking-phrase id="l59" label="guaranteed by"/>
+            <linking-phrase id="l60" label="is set by"/>
             <linking-phrase id="l61" label="via"/>
-            <linking-phrase id="l62" label="includes"/>
-            <linking-phrase id="l63" label="is verified by"/>
-            <linking-phrase id="l64" label="includes"/>
+            <linking-phrase id="l62" label="via"/>
+            <linking-phrase id="l63" label="includes"/>
+            <linking-phrase id="l64" label="is verified by"/>
             <linking-phrase id="l65" label="includes"/>
             <linking-phrase id="l66" label="includes"/>
             <linking-phrase id="l67" label="includes"/>
-            <linking-phrase id="l68" label="tracks"/>
-            <linking-phrase id="l69" label="includes"/>
+            <linking-phrase id="l68" label="includes"/>
+            <linking-phrase id="l69" label="tracks"/>
             <linking-phrase id="l70" label="includes"/>
             <linking-phrase id="l71" label="includes"/>
             <linking-phrase id="l72" label="includes"/>
             <linking-phrase id="l73" label="includes"/>
-            <linking-phrase id="l74" label="is documented by"/>
-            <linking-phrase id="l75" label="uses"/>
+            <linking-phrase id="l74" label="includes"/>
+            <linking-phrase id="l75" label="is documented by"/>
             <linking-phrase id="l76" label="uses"/>
             <linking-phrase id="l77" label="uses"/>
+            <linking-phrase id="l78" label="uses"/>
         </linking-phrase-list>
 
         <!-- =========================== CONNECTIONS =========================== -->
@@ -385,117 +388,120 @@
             <!-- code -> pkg_ops: contains -->
             <connection from-id="c32" to-id="l40"/>
             <connection from-id="l40" to-id="c41"/>
-            <!-- code -> pkg_skillsec: contains -->
+            <!-- code -> pkg_logic: contains -->
             <connection from-id="c32" to-id="l41"/>
             <connection from-id="l41" to-id="c42"/>
-            <!-- root -> dataflow: processes -->
-            <connection from-id="c1" to-id="l42"/>
+            <!-- code -> pkg_skillsec: contains -->
+            <connection from-id="c32" to-id="l42"/>
             <connection from-id="l42" to-id="c43"/>
-            <!-- dataflow -> flow_nmap: starts from -->
-            <connection from-id="c43" to-id="l43"/>
+            <!-- root -> dataflow: processes -->
+            <connection from-id="c1" to-id="l43"/>
             <connection from-id="l43" to-id="c44"/>
-            <!-- flow_nmap -> flow_llm: becomes -->
+            <!-- dataflow -> flow_nmap: starts from -->
             <connection from-id="c44" to-id="l44"/>
             <connection from-id="l44" to-id="c45"/>
-            <!-- dataflow -> flow_wstg: includes -->
-            <connection from-id="c43" to-id="l45"/>
+            <!-- flow_nmap -> flow_llm: becomes -->
+            <connection from-id="c45" to-id="l45"/>
             <connection from-id="l45" to-id="c46"/>
-            <!-- dataflow -> flow_recon: includes -->
-            <connection from-id="c43" to-id="l46"/>
+            <!-- dataflow -> flow_wstg: includes -->
+            <connection from-id="c44" to-id="l46"/>
             <connection from-id="l46" to-id="c47"/>
-            <!-- dataflow -> flow_discover: includes -->
-            <connection from-id="c43" to-id="l47"/>
+            <!-- dataflow -> flow_recon: includes -->
+            <connection from-id="c44" to-id="l47"/>
             <connection from-id="l47" to-id="c48"/>
-            <!-- dataflow -> flow_chain: includes -->
-            <connection from-id="c43" to-id="l48"/>
+            <!-- dataflow -> flow_discover: includes -->
+            <connection from-id="c44" to-id="l48"/>
             <connection from-id="l48" to-id="c49"/>
-            <!-- dataflow -> flow_secrets: includes -->
-            <connection from-id="c43" to-id="l49"/>
+            <!-- dataflow -> flow_chain: includes -->
+            <connection from-id="c44" to-id="l49"/>
             <connection from-id="l49" to-id="c50"/>
-            <!-- dataflow -> flow_deps: includes -->
-            <connection from-id="c43" to-id="l50"/>
+            <!-- dataflow -> flow_secrets: includes -->
+            <connection from-id="c44" to-id="l50"/>
             <connection from-id="l50" to-id="c51"/>
-            <!-- dataflow -> flow_skill: includes -->
-            <connection from-id="c43" to-id="l51"/>
+            <!-- dataflow -> flow_deps: includes -->
+            <connection from-id="c44" to-id="l51"/>
             <connection from-id="l51" to-id="c52"/>
-            <!-- root -> safety: is constrained by -->
-            <connection from-id="c1" to-id="l52"/>
+            <!-- dataflow -> flow_skill: includes -->
+            <connection from-id="c44" to-id="l52"/>
             <connection from-id="l52" to-id="c53"/>
-            <!-- safety -> safe_off: defaults to -->
-            <connection from-id="c53" to-id="l53"/>
+            <!-- root -> safety: is constrained by -->
+            <connection from-id="c1" to-id="l53"/>
             <connection from-id="l53" to-id="c54"/>
-            <!-- safety -> safe_allowlist: requires -->
-            <connection from-id="c53" to-id="l54"/>
+            <!-- safety -> safe_off: defaults to -->
+            <connection from-id="c54" to-id="l54"/>
             <connection from-id="l54" to-id="c55"/>
-            <!-- safety -> safe_dry: defaults to -->
-            <connection from-id="c53" to-id="l55"/>
+            <!-- safety -> safe_allowlist: requires -->
+            <connection from-id="c54" to-id="l55"/>
             <connection from-id="l55" to-id="c56"/>
-            <!-- safety -> safe_ingest: prefers -->
-            <connection from-id="c53" to-id="l56"/>
+            <!-- safety -> safe_dry: defaults to -->
+            <connection from-id="c54" to-id="l56"/>
             <connection from-id="l56" to-id="c57"/>
-            <!-- safety -> safe_templates: enforces -->
-            <connection from-id="c53" to-id="l57"/>
+            <!-- safety -> safe_ingest: prefers -->
+            <connection from-id="c54" to-id="l57"/>
             <connection from-id="l57" to-id="c58"/>
-            <!-- safety -> safe_runner: guaranteed by -->
-            <connection from-id="c53" to-id="l58"/>
+            <!-- safety -> safe_templates: enforces -->
+            <connection from-id="c54" to-id="l58"/>
             <connection from-id="l58" to-id="c59"/>
-            <!-- root -> configsec: is set by -->
-            <connection from-id="c1" to-id="l59"/>
+            <!-- safety -> safe_runner: guaranteed by -->
+            <connection from-id="c54" to-id="l59"/>
             <connection from-id="l59" to-id="c60"/>
-            <!-- configsec -> cfg_file: via -->
-            <connection from-id="c60" to-id="l60"/>
+            <!-- root -> configsec: is set by -->
+            <connection from-id="c1" to-id="l60"/>
             <connection from-id="l60" to-id="c61"/>
-            <!-- configsec -> cfg_env: via -->
-            <connection from-id="c60" to-id="l61"/>
+            <!-- configsec -> cfg_file: via -->
+            <connection from-id="c61" to-id="l61"/>
             <connection from-id="l61" to-id="c62"/>
-            <!-- configsec -> cfg_new: includes -->
-            <connection from-id="c60" to-id="l62"/>
+            <!-- configsec -> cfg_env: via -->
+            <connection from-id="c61" to-id="l62"/>
             <connection from-id="l62" to-id="c63"/>
-            <!-- root -> quality: is verified by -->
-            <connection from-id="c1" to-id="l63"/>
+            <!-- configsec -> cfg_new: includes -->
+            <connection from-id="c61" to-id="l63"/>
             <connection from-id="l63" to-id="c64"/>
-            <!-- quality -> q_go: includes -->
-            <connection from-id="c64" to-id="l64"/>
+            <!-- root -> quality: is verified by -->
+            <connection from-id="c1" to-id="l64"/>
             <connection from-id="l64" to-id="c65"/>
-            <!-- quality -> q_py: includes -->
-            <connection from-id="c64" to-id="l65"/>
+            <!-- quality -> q_go: includes -->
+            <connection from-id="c65" to-id="l65"/>
             <connection from-id="l65" to-id="c66"/>
-            <!-- quality -> q_ci: includes -->
-            <connection from-id="c64" to-id="l66"/>
+            <!-- quality -> q_py: includes -->
+            <connection from-id="c65" to-id="l66"/>
             <connection from-id="l66" to-id="c67"/>
-            <!-- quality -> q_drift: includes -->
-            <connection from-id="c64" to-id="l67"/>
+            <!-- quality -> q_ci: includes -->
+            <connection from-id="c65" to-id="l67"/>
             <connection from-id="l67" to-id="c68"/>
-            <!-- root -> roadmap: tracks -->
-            <connection from-id="c1" to-id="l68"/>
+            <!-- quality -> q_drift: includes -->
+            <connection from-id="c65" to-id="l68"/>
             <connection from-id="l68" to-id="c69"/>
-            <!-- roadmap -> rm_cloud: includes -->
-            <connection from-id="c69" to-id="l69"/>
+            <!-- root -> roadmap: tracks -->
+            <connection from-id="c1" to-id="l69"/>
             <connection from-id="l69" to-id="c70"/>
-            <!-- roadmap -> rm_chain2: includes -->
-            <connection from-id="c69" to-id="l70"/>
+            <!-- roadmap -> rm_cloud: includes -->
+            <connection from-id="c70" to-id="l70"/>
             <connection from-id="l70" to-id="c71"/>
-            <!-- roadmap -> rm_skills: includes -->
-            <connection from-id="c69" to-id="l71"/>
+            <!-- roadmap -> rm_chain2: includes -->
+            <connection from-id="c70" to-id="l71"/>
             <connection from-id="l71" to-id="c72"/>
-            <!-- roadmap -> rm_enrich: includes -->
-            <connection from-id="c69" to-id="l72"/>
+            <!-- roadmap -> rm_skills: includes -->
+            <connection from-id="c70" to-id="l72"/>
             <connection from-id="l72" to-id="c73"/>
-            <!-- roadmap -> rm_rubrics: includes -->
-            <connection from-id="c69" to-id="l73"/>
+            <!-- roadmap -> rm_enrich: includes -->
+            <connection from-id="c70" to-id="l73"/>
             <connection from-id="l73" to-id="c74"/>
-            <!-- root -> meta: is documented by -->
-            <connection from-id="c1" to-id="l74"/>
+            <!-- roadmap -> rm_rubrics: includes -->
+            <connection from-id="c70" to-id="l74"/>
             <connection from-id="l74" to-id="c75"/>
-            <!-- meta -> meta_cxl: uses -->
-            <connection from-id="c75" to-id="l75"/>
+            <!-- root -> meta: is documented by -->
+            <connection from-id="c1" to-id="l75"/>
             <connection from-id="l75" to-id="c76"/>
-            <!-- meta -> meta_comments: uses -->
-            <connection from-id="c75" to-id="l76"/>
+            <!-- meta -> meta_cxl: uses -->
+            <connection from-id="c76" to-id="l76"/>
             <connection from-id="l76" to-id="c77"/>
-            <!-- meta -> meta_versions: uses -->
-            <connection from-id="c75" to-id="l77"/>
+            <!-- meta -> meta_comments: uses -->
+            <connection from-id="c76" to-id="l77"/>
             <connection from-id="l77" to-id="c78"/>
+            <!-- meta -> meta_versions: uses -->
+            <connection from-id="c76" to-id="l78"/>
+            <connection from-id="l78" to-id="c79"/>
         </connection-list>
 
         <!-- ===================== CONCEPT LAYOUT (x, y) ====================== -->
@@ -542,10 +548,10 @@
             <concept-appearance id="c40" x="820" y="1558"/>
             <concept-appearance id="c41" x="820" y="1604"/>
             <concept-appearance id="c42" x="820" y="1650"/>
-            <concept-appearance id="c43" x="440" y="270"/>
-            <concept-appearance id="c44" x="820" y="1696"/>
-            <concept-appearance id="c45" x="1200" y="40"/>
-            <concept-appearance id="c46" x="820" y="1742"/>
+            <concept-appearance id="c43" x="820" y="1696"/>
+            <concept-appearance id="c44" x="440" y="270"/>
+            <concept-appearance id="c45" x="820" y="1742"/>
+            <concept-appearance id="c46" x="1200" y="40"/>
             <concept-appearance id="c47" x="820" y="1788"/>
             <concept-appearance id="c48" x="820" y="1834"/>
             <concept-appearance id="c49" x="820" y="1880"/>
@@ -578,6 +584,7 @@
             <concept-appearance id="c76" x="820" y="2892"/>
             <concept-appearance id="c77" x="820" y="2938"/>
             <concept-appearance id="c78" x="820" y="2984"/>
+            <concept-appearance id="c79" x="820" y="3030"/>
         </concept-appearance-list>
 
         <!-- ================== LINKING PHRASE LAYOUT (x, y) ================== -->
@@ -623,42 +630,43 @@
             <linking-phrase-appearance id="l39" x="630" y="891"/>
             <linking-phrase-appearance id="l40" x="630" y="914"/>
             <linking-phrase-appearance id="l41" x="630" y="937"/>
-            <linking-phrase-appearance id="l42" x="250" y="155"/>
-            <linking-phrase-appearance id="l43" x="630" y="983"/>
-            <linking-phrase-appearance id="l44" x="1010" y="868"/>
-            <linking-phrase-appearance id="l45" x="630" y="1006"/>
-            <linking-phrase-appearance id="l46" x="630" y="1029"/>
-            <linking-phrase-appearance id="l47" x="630" y="1052"/>
-            <linking-phrase-appearance id="l48" x="630" y="1075"/>
-            <linking-phrase-appearance id="l49" x="630" y="1098"/>
-            <linking-phrase-appearance id="l50" x="630" y="1121"/>
-            <linking-phrase-appearance id="l51" x="630" y="1144"/>
-            <linking-phrase-appearance id="l52" x="250" y="178"/>
-            <linking-phrase-appearance id="l53" x="630" y="1190"/>
-            <linking-phrase-appearance id="l54" x="630" y="1213"/>
-            <linking-phrase-appearance id="l55" x="630" y="1236"/>
-            <linking-phrase-appearance id="l56" x="630" y="1259"/>
-            <linking-phrase-appearance id="l57" x="630" y="1282"/>
-            <linking-phrase-appearance id="l58" x="630" y="1305"/>
-            <linking-phrase-appearance id="l59" x="250" y="201"/>
-            <linking-phrase-appearance id="l60" x="630" y="1351"/>
-            <linking-phrase-appearance id="l61" x="630" y="1374"/>
-            <linking-phrase-appearance id="l62" x="630" y="1397"/>
-            <linking-phrase-appearance id="l63" x="250" y="224"/>
-            <linking-phrase-appearance id="l64" x="630" y="1443"/>
-            <linking-phrase-appearance id="l65" x="630" y="1466"/>
-            <linking-phrase-appearance id="l66" x="630" y="1489"/>
-            <linking-phrase-appearance id="l67" x="630" y="1512"/>
-            <linking-phrase-appearance id="l68" x="250" y="247"/>
-            <linking-phrase-appearance id="l69" x="630" y="1558"/>
-            <linking-phrase-appearance id="l70" x="630" y="1581"/>
-            <linking-phrase-appearance id="l71" x="630" y="1604"/>
-            <linking-phrase-appearance id="l72" x="630" y="1627"/>
-            <linking-phrase-appearance id="l73" x="630" y="1650"/>
-            <linking-phrase-appearance id="l74" x="250" y="270"/>
-            <linking-phrase-appearance id="l75" x="630" y="1696"/>
-            <linking-phrase-appearance id="l76" x="630" y="1719"/>
-            <linking-phrase-appearance id="l77" x="630" y="1742"/>
+            <linking-phrase-appearance id="l42" x="630" y="960"/>
+            <linking-phrase-appearance id="l43" x="250" y="155"/>
+            <linking-phrase-appearance id="l44" x="630" y="983"/>
+            <linking-phrase-appearance id="l45" x="1010" y="868"/>
+            <linking-phrase-appearance id="l46" x="630" y="1006"/>
+            <linking-phrase-appearance id="l47" x="630" y="1029"/>
+            <linking-phrase-appearance id="l48" x="630" y="1052"/>
+            <linking-phrase-appearance id="l49" x="630" y="1075"/>
+            <linking-phrase-appearance id="l50" x="630" y="1098"/>
+            <linking-phrase-appearance id="l51" x="630" y="1121"/>
+            <linking-phrase-appearance id="l52" x="630" y="1144"/>
+            <linking-phrase-appearance id="l53" x="250" y="178"/>
+            <linking-phrase-appearance id="l54" x="630" y="1190"/>
+            <linking-phrase-appearance id="l55" x="630" y="1213"/>
+            <linking-phrase-appearance id="l56" x="630" y="1236"/>
+            <linking-phrase-appearance id="l57" x="630" y="1259"/>
+            <linking-phrase-appearance id="l58" x="630" y="1282"/>
+            <linking-phrase-appearance id="l59" x="630" y="1305"/>
+            <linking-phrase-appearance id="l60" x="250" y="201"/>
+            <linking-phrase-appearance id="l61" x="630" y="1351"/>
+            <linking-phrase-appearance id="l62" x="630" y="1374"/>
+            <linking-phrase-appearance id="l63" x="630" y="1397"/>
+            <linking-phrase-appearance id="l64" x="250" y="224"/>
+            <linking-phrase-appearance id="l65" x="630" y="1443"/>
+            <linking-phrase-appearance id="l66" x="630" y="1466"/>
+            <linking-phrase-appearance id="l67" x="630" y="1489"/>
+            <linking-phrase-appearance id="l68" x="630" y="1512"/>
+            <linking-phrase-appearance id="l69" x="250" y="247"/>
+            <linking-phrase-appearance id="l70" x="630" y="1558"/>
+            <linking-phrase-appearance id="l71" x="630" y="1581"/>
+            <linking-phrase-appearance id="l72" x="630" y="1604"/>
+            <linking-phrase-appearance id="l73" x="630" y="1627"/>
+            <linking-phrase-appearance id="l74" x="630" y="1650"/>
+            <linking-phrase-appearance id="l75" x="250" y="270"/>
+            <linking-phrase-appearance id="l76" x="630" y="1696"/>
+            <linking-phrase-appearance id="l77" x="630" y="1719"/>
+            <linking-phrase-appearance id="l78" x="630" y="1742"/>
         </linking-phrase-appearance-list>
 
     </map>

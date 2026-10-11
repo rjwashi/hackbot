@@ -40,6 +40,7 @@ hackbot  (mind map v4 — overview, annotated)
 │   ├── contains → vulscan/
 │   ├── contains → wstg/ (+ capability.go, run.go)
 │   ├── contains → ops/ (+ runner.go, recon.go, discovery.go, secrets.go, deps.go)
+│   ├── contains → logic/ (logic.go, probes.go, run.go)
 │   └── contains → skillsec/ (skillsec.go, rules.go, run.go)
 ├── processes → DATA FLOW
 │   ├── starts from → nmap XML (or guarded scan) → parse → analyze → []Finding
