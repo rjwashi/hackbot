@@ -19,16 +19,17 @@ import ( // imports for the whole CLI
 	"strings"       // arg/severity/string helpers
 	"time"          // web check timeouts
 
-	"github.com/rjwashi/hackbot/internal/agent"    // the pipeline
-	"github.com/rjwashi/hackbot/internal/bot"      // the core bot loop + Python bridge
-	"github.com/rjwashi/hackbot/internal/config"   // configuration loading
-	"github.com/rjwashi/hackbot/internal/cve"      // CVE search (NVD) agent
-	"github.com/rjwashi/hackbot/internal/nmap"     // XML parsing + analysis
-	"github.com/rjwashi/hackbot/internal/ops"      // recon + content-discovery engine
-	"github.com/rjwashi/hackbot/internal/scan"     // guarded scanning
-	"github.com/rjwashi/hackbot/internal/skillsec" // skill-security rubric evaluation
-	"github.com/rjwashi/hackbot/internal/vulscan"  // vulscan (VulDB) recon agent
-	"github.com/rjwashi/hackbot/internal/wstg"     // WSTG web-security-testing checklists
+	"github.com/rjwashi/hackbot/internal/agent"     // the pipeline
+	"github.com/rjwashi/hackbot/internal/bot"       // the core bot loop + Python bridge
+	"github.com/rjwashi/hackbot/internal/config"    // configuration loading
+	"github.com/rjwashi/hackbot/internal/cve"       // CVE search (NVD) agent
+	"github.com/rjwashi/hackbot/internal/logic"     // guarded logic-bug probes
+	"github.com/rjwashi/hackbot/internal/nmap"      // XML parsing + analysis
+	"github.com/rjwashi/hackbot/internal/ops"       // recon + content-discovery engine
+	"github.com/rjwashi/hackbot/internal/scan"      // guarded scanning
+	"github.com/rjwashi/hackbot/internal/skillsec"  // skill-security rubric evaluation
+	"github.com/rjwashi/hackbot/internal/vulscan"   // vulscan (VulDB) recon agent
+	"github.com/rjwashi/hackbot/internal/wstg"      // WSTG web-security-testing checklists
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -104,6 +105,11 @@ Commands:
   skill plan <rubric>       Map every check to a probe or manual guidance
   skill run <rubric> <path> Evaluate a skill directory against a rubric (dry-run by default)
 
+  logic list                List logic-bug probes (race, IDOR, privesc, workflows, ...)
+  logic show <probe>        Show one probe's purpose, WSTG anchor, and evidence rule
+  logic plan [probe]        Show every probe's curl commands (placeholders only, no target)
+  logic run <probe> <tgt>   Run a logic probe against a target (guarded, dry-run by default)
+
 Common flags:
   -config PATH              Path to a JSON config file (optional)
   -json                     Machine-readable JSON output (nmap commands)
@@ -123,6 +129,14 @@ recon/discover/secrets/deps flags:
 skill run flags:
   -dry-run                  Do not execute probes (default true; pass -dry-run=false)
   -timeout DURATION         Per-probe timeout (default 60s)
+
+logic run flags:
+  -dry-run                  Do not execute probes (default true; pass -dry-run=false)
+  -timeout DURATION         Per-request timeout (default 60s)
+  -scheme SCHEME            URL scheme used to build the request URL (default https)
+  -path PATH                Endpoint path override for probes using {path} (default: each probe's curated path)
+  -token TOKEN              Bearer token (Authorization header) for authenticated probes
+  -header "Name: value"     One extra request header on every required request (repeatable for more)
 
 nmap scan flags:
   -scripts LIST             NSE scripts to run (default: safe recon set; "none" disables)
@@ -162,7 +176,7 @@ func main() { // program entry point
 
 	var err error    // captured command error
 	switch command { // dispatch on the command name
-	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover", "secrets", "deps", "skill": // commands that load config and parse flags
+	case "hello", "run", "py", "nmap", "cve", "agents", "layout", "web", "recon", "discover", "secrets", "deps", "skill", "logic": // commands that load config and parse flags
 		err = runCommand(command, args)
 	case "version", "-v", "--version": // version has no config/flags
 		fmt.Println(version)
@@ -209,6 +223,11 @@ func runCommand(command string, args []string) error { // shared preamble
 	webTimeout := fs.Duration("timeout", 60*time.Second, "per-check timeout for web run") // bound each tool
 	webScheme := fs.String("scheme", "https", "URL scheme for web run (https|http)")      // target URL scheme
 	webTest := fs.String("test", "", "only run this WSTG test id (web run)")              // single-capability filter
+
+	// logic run flags.
+	logicPath := fs.String("path", "", "endpoint path override for logic probes")                    // the {path} to probe
+	logicToken := fs.String("token", "", "bearer token for logic probes (Authorization header)")     // authenticate
+	logicHeader := fs.String("header", "", "one extra header for logic probes (Name: value)")        // extra header
 
 	// recon/discover flags.
 	wordlist := fs.String("wordlist", "", "wordlist path for content discovery") // discovery wordlist override
@@ -301,6 +320,16 @@ func runCommand(command string, args []string) error { // shared preamble
 			json:    *asJSON,     // JSON output
 			dryRun:  *dryRun,     // dry-run default true (nothing executes)
 			timeout: *webTimeout, // per-probe timeout
+		})
+	case "logic": // logic-bug probes (micro-scoped agents)
+		return runLogic(cfg, fs.Args(), logicFlags{ // pass config + logic flags
+			json:    *asJSON,      // JSON output
+			dryRun:  *dryRun,      // dry-run default true (no requests)
+			timeout: *webTimeout,  // per-request timeout
+			scheme:  *webScheme,   // URL scheme
+			path:    *logicPath,   // endpoint override for {path}
+			token:   *logicToken,  // bearer token
+			header:  *logicHeader, // one extra request header
 		})
 	}
 	return nil // unreachable
@@ -1034,6 +1063,178 @@ func runSkillEval(cfg config.Config, rubrics []skillsec.Rubric, rest []string, f
 	return nil
 }
 
+// logicFlags carries the logic-family flags.
+//
+// WHY a dedicated struct: logic probes need the same dry-run/timeout/scheme as
+// `web`, plus an endpoint override and optional authentication. Keeping them in
+// one explicit struct makes the contract readable and the flags testable.
+type logicFlags struct {
+	json    bool          // emit JSON
+	dryRun  bool          // render probes but send nothing (SECURITY: default true)
+	timeout time.Duration // per-request timeout
+	scheme  string        // URL scheme used to build the request URL
+	path    string        // endpoint override for probes using {path}
+	token   string        // bearer token (Authorization header)
+	header  string        // one extra request header on every probe request
+}
+
+// runLogic dispatches the logic-bug probe agents.
+//
+// Subcommands:
+//
+//	logic list               list the probes by WSTG category (default)
+//	logic show <probe>       show one probe: purpose, tests, evidence rule
+//	logic plan [probe]       show every probe's curl commands (no target yet)
+//	logic run <probe> <tgt>  run a probe against a target (guarded, dry-run default)
+func runLogic(cfg config.Config, args []string, fl logicFlags) error { // used by `hackbot logic`
+	sub := "" // the subcommand (lowercased); empty means "list"
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+	switch sub { // dispatch
+	case "", "list": // the probe catalog
+		return runLogicList(fl.json)
+	case "show": // one probe's overview
+		if len(args) < 2 { // need a probe key...
+			return fmt.Errorf("logic show: missing <probe> (try: hackbot logic list)")
+		}
+		return runLogicShow(args[1], fl.json)
+	case "plan": // render the commands without a target
+		return runLogicPlan(args[1:], fl)
+	case "run": // guarded execution
+		return runLogicRun(cfg, args[1:], fl)
+	default: // a bare probe key forwards to `show`, like `web <category>` does
+		return runLogicShow(args[0], fl.json)
+	}
+}
+
+// runLogicList prints the probe catalog, grouped by WSTG category so an operator
+// sees the whole automatable logic-bug surface at a glance.
+func runLogicList(asJSON bool) error { // used by `logic list`
+	probes := logic.Catalog() // the shipped set
+	if asJSON {               // JSON mode
+		return printJSON(probes)
+	}
+	byCat := map[string][]logic.Probe{} // group by category slug
+	order := []string{}                // deterministic category order
+	for _, p := range probes {         // bucket the probes
+		if _, seen := byCat[p.Category]; !seen { // first probe in a category...
+			order = append(order, p.Category) // ...remembers its position
+		}
+		byCat[p.Category] = append(byCat[p.Category], p)
+	}
+	fmt.Printf("%d logic probes:\n", len(probes))
+	for _, cat := range order { // one section per category
+		fmt.Printf("%s:\n", cat)
+		for _, p := range byCat[cat] { // one row per probe
+			fmt.Printf("  %-18s %s  [%s]\n", p.Key, p.Name, strings.Join(p.Tests, ", "))
+		}
+	}
+	return nil
+}
+
+// runLogicShow prints one probe's purpose and its evidence rule, so an operator
+// knows what FOUND means before deciding whether to run it.
+func runLogicShow(query string, asJSON bool) error { // used by `logic show` and bare keys
+	p, ok := logic.ByKey(query) // look up the probe
+	if !ok {                    // unknown...
+		return fmt.Errorf("logic show: unknown probe %q (try: hackbot logic list)", query)
+	}
+	if asJSON { // JSON mode
+		return printJSON(p)
+	}
+	fmt.Printf("%s  (%s)\n", p.Name, p.Key)
+	fmt.Printf("  category:     %s\n", p.Category)
+	fmt.Printf("  tests:        %s\n", strings.Join(p.Tests, ", "))
+	fmt.Printf("  default path: %s\n", p.DefaultPath)
+	fmt.Printf("  FOUND when:   %s\n", p.Like)
+	if p.Note != "" { // the customization caveat
+		fmt.Printf("  note:         %s\n", p.Note)
+	}
+	return nil
+}
+
+// runLogicPlan renders every command a probe (or every probe) would send, with
+// {url}/{path} placeholders and no target — the same preview `web plan` gives.
+func runLogicPlan(rest []string, fl logicFlags) error { // used by `logic plan`
+	probes := logic.Catalog()            // start with the whole set
+	if len(rest) > 0 {                   // an optional probe filter...
+		p, ok := logic.ByKey(rest[0])   // ...by any handle
+		if !ok {                         // unknown...
+			return fmt.Errorf("logic plan: unknown probe %q (try: hackbot logic list)", rest[0])
+		}
+		probes = []logic.Probe{p} // narrow to one
+	}
+	var steps []logic.PlanStep // accumulate the plan rows
+	for _, p := range probes {
+		steps = append(steps, logic.Plan(p, logic.Options{Scheme: fl.scheme, Path: fl.path, Header: fl.header})...)
+	}
+	if fl.json { // JSON mode
+		return printJSON(steps)
+	}
+	for _, s := range steps { // one section per probe
+		fmt.Printf("%s — %s\n", s.Probe, s.Name)
+		fmt.Printf("  tests: %s\n", strings.Join(s.Tests, ", "))
+		if s.Like != "" { // what evidence triggers FOUND
+			fmt.Printf("  FOUND when: %s\n", s.Like)
+		}
+		for _, c := range s.Commands { // the curl commands, one per line
+			fmt.Printf("  %s\n", c)
+		}
+	}
+	return nil
+}
+
+// runLogicRun executes one probe against a target. The gates — enable_scan plus
+// the target inside the IP/domain allowlists — live inside the logic runner
+// itself (the authoritative copy), and dry-run is the default, so this command
+// cannot send requests without the operator opting in.
+func runLogicRun(cfg config.Config, rest []string, fl logicFlags) error { // used by `logic run`
+	if len(rest) < 2 { // need a probe and a target...
+		return fmt.Errorf("logic run: usage: logic run <probe> <target> (dry-run by default)")
+	}
+	p, ok := logic.ByKey(rest[0]) // look up the probe
+	if !ok {                      // unknown...
+		return fmt.Errorf("logic run: unknown probe %q (try: hackbot logic list)", rest[0])
+	}
+	if !fl.dryRun && !cfg.EnableScan { // a friendly pre-check before the runner repeats it
+		return fmt.Errorf("logic run: %w (set enable_scan=true to send probe requests)", ops.ErrDisabled)
+	}
+	res, err := logic.Run(context.Background(), p, rest[1], logic.Options{ // guarded run
+		Enable:         cfg.EnableScan,   // master switch
+		AllowedTargets: cfg.AllowedTargets, // IP/CIDR allowlist
+		AllowedDomains: cfg.AllowedDomains, // domain allowlist
+		DryRun:         fl.dryRun,        // dry-run default true
+		Timeout:        fl.timeout,       // per-request timeout
+		Scheme:         fl.scheme,        // URL scheme
+		Path:           fl.path,          // endpoint override
+		Token:          fl.token,         // bearer token
+		Header:         fl.header,        // one extra header
+		Log:            func(string) {},  // quiet by default
+	})
+	if err != nil { // refused by a gate, or the target is unusable
+		return fmt.Errorf("logic run: %w", err)
+	}
+	if fl.json { // JSON mode
+		return printJSON(res)
+	}
+	if fl.dryRun { // render the commands, send nothing
+		fmt.Printf("%s — dry-run: no requests sent (pass -dry-run=false to execute)\n", res.Probe)
+		for _, c := range res.Commands {
+			fmt.Printf("  %s\n", c)
+		}
+		return nil
+	}
+	fmt.Printf("[%s] %s\n", res.Verdict, res.Name) // the headline verdict
+	if res.Reason != "" {                         // why the verdict was chosen
+		fmt.Printf("  reason: %s\n", res.Reason)
+	}
+	for _, e := range res.Evidence { // numbered evidence lines
+		fmt.Printf("  %d. %s\n", e.Line, e.Text)
+	}
+	return nil
+}
+
 // uniqueSorted de-duplicates and sorts a slice of strings, for the closing note
 // that lists which tools were not installed during an evaluation.
 func uniqueSorted(in []string) []string { // helper for the eval summary
@@ -1541,6 +1742,18 @@ var agents = []agentInfo{ // listed by `hackbot agents`
 		Description: "Fetch known URLs from public archives with gau (OSINT)",
 		Triggers:    []string{"find historical URLs for a domain", "discover old endpoints from archives"},
 	},
+	{
+		Name:        "recon-endpoints",
+		Command:     "recon endpoints <target>",
+		Description: "Archived endpoints from the Wayback Machine with waybackurls (OSINT)",
+		Triggers:    []string{"find historical endpoints from archives", "resurrect old URLs from the Wayback Machine"},
+	},
+	{
+		Name:        "recon-crawl",
+		Command:     "recon crawl <target>",
+		Description: "Crawl the app surface with katana (maps endpoints and execution paths)",
+		Triggers:    []string{"crawl a site for endpoints", "map every route and execution path"},
+	},
 	// Content-discovery agents (family: `discover`). Each maps to one runnable
 	// task in the ops discovery catalog.
 	{
@@ -1657,6 +1870,80 @@ var agents = []agentInfo{ // listed by `hackbot agents`
 		Command:     "skill run <rubric> <path>",
 		Description: "Evaluate a skill directory against a rubric (guarded, dry-run default)",
 		Triggers:    []string{"run the full skill-security evaluation", "evaluate a downloaded skill directory against a rubric"},
+	},
+	// Logic-bug probe agents (family: `logic`). Each maps to one micro-scoped
+	// probe in internal/logic; a drift test keeps them aligned with that catalog.
+	{
+		Name:        "logic-race",
+		Command:     "logic run race <target>",
+		Description: "Race-condition probe: parallel double-submit diverges (WSTG-BUSL-04)",
+		Triggers:    []string{"test for race conditions", "find double-submit bugs"},
+	},
+	{
+		Name:        "logic-ratelimit",
+		Command:     "logic run ratelimit <target>",
+		Description: "Rate-limit probe: repeated attempts without 429/lockout (WSTG-BUSL-05, ATHN-03)",
+		Triggers:    []string{"test for missing rate limits", "check login lockout behavior"},
+	},
+	{
+		Name:        "logic-workflow",
+		Command:     "logic run workflow <target>",
+		Description: "Workflow-circumvention probe: later step reachable directly (WSTG-BUSL-06)",
+		Triggers:    []string{"test workflow bypass", "check if checkout is reachable without a cart"},
+	},
+	{
+		Name:        "logic-idor",
+		Command:     "logic run idor <target>",
+		Description: "IDOR probe: sequential object ids return different data (WSTG-ATHZ-04)",
+		Triggers:    []string{"test for insecure direct object references", "check if objects are reachable by other ids"},
+	},
+	{
+		Name:        "logic-privesc",
+		Command:     "logic run privesc <target>",
+		Description: "Privilege-escalation probe: forged signals flip a closed endpoint open (WSTG-ATHZ-03)",
+		Triggers:    []string{"test for privilege escalation", "check admin access with spoofed headers"},
+	},
+	{
+		Name:        "logic-authz-bypass",
+		Command:     "logic run authz-bypass <target>",
+		Description: "Authorization-bypass probe: verb/path tampering around a gate (WSTG-ATHZ-02, ATHN-04)",
+		Triggers:    []string{"test authz schema bypass", "try method-override and path confusion"},
+	},
+	{
+		Name:        "logic-error-disclosure",
+		Command:     "logic run error-disclosure <target>",
+		Description: "Error-disclosure probe: malformed input leaks stack traces (WSTG-ERRH-01/02)",
+		Triggers:    []string{"test for verbose error pages", "check for stack traces in responses"},
+	},
+	{
+		Name:        "logic-payment-integrity",
+		Command:     "logic run payment-integrity <target>",
+		Description: "Payment-integrity probe: tampered price/quantity accepted (WSTG-BUSL-01, BUSL-10)",
+		Triggers:    []string{"test payment validation", "check if tampered prices are accepted"},
+	},
+	{
+		Name:        "logic-upload-type",
+		Command:     "logic run upload-type <target>",
+		Description: "Upload-type probe: multipart JSP / double-extension accepted (WSTG-BUSL-08, BUSL-09)",
+		Triggers:    []string{"test file-type validation", "check upload filters"},
+	},
+	{
+		Name:        "logic-mass-assignment",
+		Command:     "logic run mass-assignment <target>",
+		Description: "Mass-assignment probe: injected privilege fields accepted (WSTG-APIT-02, ATHZ-03)",
+		Triggers:    []string{"test for mass assignment", "check if role/isAdmin are accepted"},
+	},
+	{
+		Name:        "logic-graphql-args",
+		Command:     "logic run graphql-args <target>",
+		Description: "GraphQL probe: introspection exposes the argument surface (WSTG-APIT-99)",
+		Triggers:    []string{"test GraphQL introspection", "check if the GraphQL schema is exposed"},
+	},
+	{
+		Name:        "logic-run",
+		Command:     "logic run <probe> <target>",
+		Description: "Run any logic-bug probe against a target (guarded, dry-run default)",
+		Triggers:    []string{"run a logic probe", "execute a micro-scoped logic-bug test"},
 	},
 }
 

@@ -65,6 +65,18 @@ func ReconCatalog() *Catalog { // used by `hackbot recon`
 			Install: "go install github.com/lc/gau/v2/cmd/gau@latest",
 			Notes:   "Fetch known URLs from public archives (OSINT).",
 		},
+		"katana": {
+			Key: "katana", Name: "katana", Bin: "katana", Kind: "crawler",
+			URL: "https://github.com/projectdiscovery/katana", License: "MIT",
+			Install: "go install github.com/projectdiscovery/katana/cmd/katana@latest",
+			Notes:   "Crawl the app surface: every route is a potential logic branch.",
+		},
+		"waybackurls": {
+			Key: "waybackurls", Name: "waybackurls", Bin: "waybackurls", Kind: "recon",
+			URL: "https://github.com/tomnomnom/waybackurls", License: "MIT",
+			Install: "go install github.com/tomnomnom/waybackurls@latest",
+			Notes:   "Resurrect archived endpoints; historical routes often outlive their guards.",
+		},
 	}
 
 	// Groups let `recon tools <group>` list alternates for a capability.
@@ -74,7 +86,8 @@ func ReconCatalog() *Catalog { // used by `hackbot recon`
 		"ports":      {"naabu", "nmap"},      // fast port scan vs service version
 		"http":       {"httpx"},              // probing
 		"whois":      {"whois"},              // ownership
-		"urls":       {"gau"},                // archived URLs
+		"urls":       {"gau", "waybackurls"}, // archived URLs (two archive sources)
+		"crawl":      {"katana"},             // app crawling
 	}
 
 	// Tasks are the runnable capabilities shown by `recon list` / `recon plan`.
@@ -114,12 +127,22 @@ func ReconCatalog() *Catalog { // used by `hackbot recon`
 			ToolKey: "gau", Args: []string{"{host}"}, Guarded: true,
 			Note: "Historical URLs from public archives; useful for finding endpoints.",
 		},
+		{
+			Key: "crawl", Name: "Site crawl", Group: "crawl",
+			ToolKey: "katana", Args: []string{"-u", "{url}", "-f", "qurl", "-silent"}, Guarded: true,
+			Note: "Crawl the app to map every endpoint and execution path for later probing.",
+		},
+		{
+			Key: "endpoints", Name: "Archived endpoints (Wayback)", Group: "urls",
+			ToolKey: "waybackurls", Args: []string{"{host}"}, Guarded: true,
+			Note: "History of paths from the Wayback Machine; dead/forgotten routes often outlive their guards.",
+		},
 	}
 
 	return NewCatalog( // assemble
 		"recon",
 		KindHost, // host/domain targets; gated by allowed_targets/allowed_domains
-		"OSINT reconnaissance: subdomains, DNS, ports, services, HTTP, WHOIS, archived URLs",
+		"OSINT reconnaissance: subdomains, DNS, ports, services, HTTP, WHOIS, archived URLs, crawls",
 		"https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/01-Information_Gathering/",
 		tools, groups, tasks,
 	).WithChains( // multi-step pipelines

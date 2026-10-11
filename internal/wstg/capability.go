@@ -59,6 +59,12 @@ var toolCatalog = map[string]Tool{ // keyed by Tool.Key
 		Install: "pip install wafw00f",
 		Notes:   "Detect and name web application firewalls.",
 	},
+	"arjun": {
+		Key: "arjun", Name: "Arjun", Bin: "arjun", Kind: "fuzzer",
+		URL: "https://github.com/s0md3v/Arjun", License: "GPL-3.0",
+		Install: "pip install arjun",
+		Notes:   "Discover hidden query/body parameters that switch logic branches.",
+	},
 	"nuclei": {
 		Key: "nuclei", Name: "nuclei", Bin: "nuclei", Kind: "scanner",
 		URL: "https://github.com/projectdiscovery/nuclei", License: "MIT",
@@ -82,6 +88,12 @@ var toolCatalog = map[string]Tool{ // keyed by Tool.Key
 		URL: "https://github.com/ffuf/ffuf", License: "MIT",
 		Install: "go install github.com/ffuf/ffuf/v2@latest",
 		Notes:   "Fast web fuzzer (paths, params, vhosts).",
+	},
+	"katana": {
+		Key: "katana", Name: "katana", Bin: "katana", Kind: "fuzzer",
+		URL: "https://github.com/projectdiscovery/katana", License: "MIT",
+		Install: "go install github.com/projectdiscovery/katana/cmd/katana@latest",
+		Notes:   "Crawl the app surface: every route is a potential logic branch.",
 	},
 	"sqlmap": {
 		Key: "sqlmap", Name: "sqlmap", Bin: "sqlmap", Kind: "exploit",
@@ -131,6 +143,12 @@ var toolCatalog = map[string]Tool{ // keyed by Tool.Key
 		Install: "pip install schemathesis",
 		Notes:   "Property-based testing for OpenAPI/GraphQL APIs.",
 	},
+	"inql": {
+		Key: "inql", Name: "InQL", Bin: "inql", Kind: "scanner",
+		URL: "https://github.com/doyensec/inql", License: "Apache-2.0",
+		Install: "pip install inql",
+		Notes:   "GraphQL introspection plus automated argument mutation testing.",
+	},
 	"jwt_tool": {
 		Key: "jwt_tool", Name: "jwt_tool", Bin: "jwt_tool", Kind: "cli",
 		URL: "https://github.com/ticarpi/jwt_tool", License: "GPL-3.0",
@@ -161,12 +179,18 @@ var toolCatalog = map[string]Tool{ // keyed by Tool.Key
 		Install: "go install github.com/lc/gau/v2/cmd/gau@latest",
 		Notes:   "Fetch known URLs from public archives (OSINT).",
 	},
+	"waybackurls": {
+		Key: "waybackurls", Name: "waybackurls", Bin: "waybackurls", Kind: "cli",
+		URL: "https://github.com/tomnomnom/waybackurls", License: "MIT",
+		Install: "go install github.com/tomnomnom/waybackurls@latest",
+		Notes:   "Resurrect archived endpoints from the Wayback Machine (dead routes = authz lapses).",
+	},
 }
 
 // categoryTools maps a checklist slug to the free tools most useful for it.
 // Every category lists at least one tool so every agent has capabilities.
 var categoryTools = map[string][]string{ // slug -> tool keys (catalog order)
-	"information-gathering": {"nmap", "whatweb", "wafw00f", "curl", "httpx", "gau"},
+	"information-gathering": {"nmap", "whatweb", "wafw00f", "curl", "httpx", "gau", "katana", "waybackurls", "arjun"},
 	"config-management":     {"nuclei", "nikto", "curl", "gobuster", "testssl", "feroxbuster"},
 	"identity-management":   {"curl", "ffuf", "nuclei"},
 	"authentication":        {"testssl", "nuclei", "jwt_tool", "zap", "wpscan"},
@@ -177,7 +201,7 @@ var categoryTools = map[string][]string{ // slug -> tool keys (catalog order)
 	"weak-cryptography":     {"testssl", "sslscan", "nmap"},
 	"business-logic":        {"zap", "curl"},
 	"client-side":           {"dalfox", "sstimap", "nuclei", "curl", "httpx"},
-	"api-testing":           {"schemathesis", "nuclei", "curl", "httpx"},
+	"api-testing":           {"schemathesis", "nuclei", "curl", "httpx", "inql"},
 }
 
 // manualHints gives short, per-category guidance for tests that have no
@@ -187,14 +211,14 @@ var manualHints = map[string]string{ // slug -> guidance
 	"config-management":     "Inspect the platform, headers, and exposed files by hand (use curl/ZAP).",
 	"identity-management":   "Walk the registration, provisioning, and account-enumeration flows manually.",
 	"authentication":        "Test each login path by hand with a browser and ZAP; confirm before reporting.",
-	"authorization":         "Manually replay requests as different users/roles; verify access control (ZAP helps).",
+	"authorization":         "Manually replay requests as different users/roles; verify access control (ZAP helps; hackbot logic has IDOR and privilege-escalation probes).",
 	"session-management":    "Inspect cookies, tokens, and logout behavior in a browser + ZAP.",
 	"injection":             "Probe inputs manually (ZAP/browser) and confirm; automatable cases use the tools above.",
 	"error-handling":        "Trigger errors with malformed input and inspect the responses by hand.",
 	"weak-cryptography":     "Review TLS config and any crypto usage; confirm weak primitives manually.",
-	"business-logic":        "Business logic is usually manual: map the workflow and abuse each step deliberately.",
+	"business-logic":        "Business logic is usually manual: map the workflow and abuse each step deliberately (hackbot logic automates the common classes: races, limits, workflows, integrity).",
 	"client-side":           "Use browser devtools and ZAP; confirm DOM flows by hand.",
-	"api-testing":           "Review the API spec and test with the tools above; confirm by hand.",
+	"api-testing":           "Review the API spec and test with the tools above; hackbot logic adds mass-assignment and GraphQL probes.",
 }
 
 // checks lists the curated, runnable capabilities. Each maps one checklist test
@@ -206,6 +230,9 @@ var checks = []Check{ // one row per automatable capability
 	{Slug: "information-gathering", TestID: "WSTG-INFO-03", ToolKey: "curl", Args: []string{"-sS", "-i", "{url}/robots.txt"}, Guarded: true}, // read robots.txt and headers
 	{Slug: "information-gathering", TestID: "WSTG-INFO-04", ToolKey: "nmap", Args: []string{"-sV", "-Pn", "{host}"}, Guarded: true},          // inventory exposed services
 	{Slug: "information-gathering", TestID: "WSTG-INFO-05", ToolKey: "curl", Args: []string{"-sS", "{url}"}, Guarded: true},                  // pull page content for review
+	{Slug: "information-gathering", TestID: "WSTG-INFO-06", ToolKey: "waybackurls", Args: []string{"{host}"}, Guarded: true},                  // archived endpoints (dead routes = authz lapses)
+	{Slug: "information-gathering", TestID: "WSTG-INFO-07", ToolKey: "katana", Args: []string{"-u", "{url}", "-f", "qurl", "-silent"}, Guarded: true},   // crawl the app to map execution paths
+	{Slug: "information-gathering", TestID: "WSTG-INFO-07", ToolKey: "arjun", Args: []string{"-u", "{url}"}, Guarded: true},                             // discover hidden query/body parameters
 
 	// --- Configuration and Deployment Management ---
 	{Slug: "config-management", TestID: "WSTG-CONF-01", ToolKey: "nmap", Args: []string{"-sV", "-Pn", "{host}"}, Guarded: true},                             // network infrastructure facts
@@ -245,7 +272,8 @@ var checks = []Check{ // one row per automatable capability
 	{Slug: "client-side", TestID: "WSTG-CLNT-09", ToolKey: "curl", Args: []string{"-sS", "-I", "{url}"}, Guarded: true},                                       // check framing headers
 
 	// --- API Testing ---
-	{Slug: "api-testing", TestID: "WSTG-APIT-01", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "api", "-silent"}, Guarded: true}, // API recon templates
+	{Slug: "api-testing", TestID: "WSTG-APIT-01", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "api", "-silent"}, Guarded: true},          // API recon templates
+	{Slug: "api-testing", TestID: "WSTG-APIT-01", ToolKey: "schemathesis", Args: []string{"run", "--checks", "all", "{url}/openapi.json"}, Guarded: true}, // contract fuzzing for behavior bugs
 
 	// --- Additional coverage (deepening automation) ---
 	// Each new row below points at a test id that exists in the checklist and a
@@ -262,6 +290,7 @@ var checks = []Check{ // one row per automatable capability
 	{Slug: "weak-cryptography", TestID: "WSTG-CRYP-03", ToolKey: "testssl", Args: []string{"--quiet", "--warnings", "off", "{url}"}, Guarded: true},                                    // unencrypted channels
 	{Slug: "client-side", TestID: "WSTG-CLNT-03", ToolKey: "dalfox", Args: []string{"url", "{url}"}, Guarded: true},                                                                    // HTML injection
 	{Slug: "api-testing", TestID: "WSTG-APIT-99", ToolKey: "nuclei", Args: []string{"-u", "{url}", "-tags", "graphql", "-silent"}, Guarded: true},                                      // GraphQL
+	{Slug: "api-testing", TestID: "WSTG-APIT-99", ToolKey: "inql", Args: []string{"-t", "{url}/graphql"}, Guarded: true},                                                              // GraphQL introspection + attack
 }
 
 // Check is a runnable capability: one checklist test, one free tool, one of a
